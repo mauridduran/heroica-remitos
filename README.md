@@ -12,6 +12,11 @@ App web para seguir **online y en tiempo real** cada remito que sale de los obra
 
 Cada acción queda registrada con usuario, fecha y hora (trazabilidad completa).
 
+**App online:** https://mauridduran.github.io/heroica-remitos/
+**Código:** https://github.com/mauridduran/heroica-remitos · **Base de datos:** proyecto Supabase `heroica-remitos` (São Paulo).
+
+Para actualizar la app publicada, subir los archivos modificados al repositorio de GitHub (misma carpeta); GitHub Pages la vuelve a publicar sola en 1–2 minutos.
+
 ## Probarla ya (modo demo)
 
 Sin configurar nada, la app arranca en **modo demo** con datos de ejemplo guardados en el navegador:
