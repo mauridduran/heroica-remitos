@@ -114,6 +114,10 @@ async function boot() {
     if (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY) {
       const m = await import('./db-supabase.js');
       db = await m.createSupabaseDB(cfg);
+      const rec = await db.recoveryState();
+      if (rec.error || rec.recovery) history.replaceState(null, '', location.pathname); // limpia el token de la URL
+      if (rec.error) setTimeout(() => toast('El link de recupero venció o ya se usó. Pedí uno nuevo.', { err: true }), 300);
+      if (rec.recovery) return renderNuevaPassword();
     } else {
       db = createDemoDB();
     }
@@ -173,6 +177,29 @@ async function renderLogin() {
     return;
   }
   let signup = false;
+  const drawReset = () => {
+    $('#app').innerHTML = `<div class="login"><div class="card">
+      <div class="brand"><div class="brand-logo">R</div>${empresa}</div>
+      <h2 style="margin:6px 0">Recuperar contraseña</h2>
+      <p class="muted">Escribí el mail con el que te registraste y te mandamos un link para elegir una contraseña nueva.</p>
+      <form id="fr" class="grid" style="margin-top:12px">
+        <label class="field"><span>Email</span><input name="email" type="email" required autocomplete="username"></label>
+        <button class="btn primary big">Enviar link</button>
+      </form>
+      <div id="sent"></div>
+      <p class="small muted" style="margin-top:14px"><a href="#" id="back">← Volver a ingresar</a></p>
+    </div></div>`;
+    $('#back').onclick = (e) => { e.preventDefault(); draw(); };
+    $('#fr').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = $('button', e.target); btn.disabled = true;
+      const email = new FormData(e.target).get('email');
+      try {
+        await db.resetPassword(email);
+        $('#sent').innerHTML = `<div class="callout info" style="margin:14px 0 0"><span>Listo. Si ${esc(email)} tiene usuario, en unos minutos le llega un mail con el link. Revisá también la carpeta de spam.</span></div>`;
+      } catch (ex) { err(ex); btn.disabled = false; }
+    };
+  };
   const draw = () => {
     $('#app').innerHTML = `<div class="login"><div class="card">
       <div class="brand"><div class="brand-logo">R</div>${empresa}</div>
@@ -183,9 +210,12 @@ async function renderLogin() {
         <label class="field"><span>Contraseña</span><input name="pass" type="password" required minlength="6" autocomplete="${signup ? 'new-password' : 'current-password'}"></label>
         <button class="btn primary big">${signup ? 'Crear usuario' : 'Ingresar'}</button>
       </form>
-      <p class="small muted" style="margin-top:14px"><a href="#" id="tog">${signup ? 'Ya tengo usuario' : 'No tengo usuario, registrarme'}</a></p>
+      <p class="small muted" style="margin-top:14px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <a href="#" id="tog">${signup ? 'Ya tengo usuario' : 'No tengo usuario, registrarme'}</a>
+        ${signup ? '' : '<a href="#" id="olvide">¿Olvidaste tu contraseña?</a>'}</p>
     </div></div>`;
     $('#tog').onclick = (e) => { e.preventDefault(); signup = !signup; draw(); };
+    $('#olvide') && ($('#olvide').onclick = (e) => { e.preventDefault(); drawReset(); });
     $('#f').onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -198,6 +228,32 @@ async function renderLogin() {
     };
   };
   draw();
+}
+
+// Pantalla a la que llega el link del mail de recupero
+function renderNuevaPassword() {
+  $('#app').innerHTML = `<div class="login"><div class="card">
+    <div class="brand"><div class="brand-logo">R</div>${esc(cfg.EMPRESA || 'Control de Remitos')}</div>
+    <h2 style="margin:6px 0">Elegí tu contraseña nueva</h2>
+    <form id="fn" class="grid" style="margin-top:12px">
+      <label class="field"><span>Contraseña nueva</span><input name="p1" type="password" required minlength="6" autocomplete="new-password"></label>
+      <label class="field"><span>Repetila</span><input name="p2" type="password" required minlength="6" autocomplete="new-password"></label>
+      <button class="btn primary big">Guardar e ingresar</button>
+    </form></div></div>`;
+  $('#fn').onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    if (fd.get('p1') !== fd.get('p2')) return toast('Las dos contraseñas no coinciden', { err: true });
+    const btn = $('button', e.target); btn.disabled = true;
+    try {
+      me = await db.updatePassword(fd.get('p1'));
+      toast('Contraseña actualizada');
+      if (!me) return location.reload();
+      if (me.rol === 'pendiente') return renderPendiente();
+      location.hash = '#/tablero';
+      start();
+    } catch (ex) { err(ex); btn.disabled = false; }
+  };
 }
 
 function renderPendiente() {
@@ -926,7 +982,13 @@ async function viewConfig(v) {
     out.innerHTML = `${db.mode === 'supabase' ? '<div class="callout info"><span>Cada persona se registra desde la pantalla de ingreso. Después le asignás acá el rol y su obrador o local.</span></div>' : ''}
       <div class="card"><div class="card-head"><h2>Usuarios</h2></div><div class="table-wrap"><table>
       <thead><tr><th>Nombre</th><th>Email</th><th>Rol</th><th>Obrador / local</th><th></th></tr></thead>
-      <tbody>${users.map((u) => `<tr><td><b>${esc(u.nombre)}</b></td><td>${esc(u.email)}</td><td>${u.rol === 'pendiente' ? '<span class="badge b-amber">Pendiente</span>' : esc(ROLES[u.rol])}</td><td>${esc(u.location_id ? locName(u.location_id) : '—')}</td><td class="num"><button class="btn sm" data-e="${u.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>`;
+      <tbody>${users.map((u) => `<tr><td><b>${esc(u.nombre)}</b></td><td>${esc(u.email)}</td><td>${u.rol === 'pendiente' ? '<span class="badge b-amber">Pendiente</span>' : esc(ROLES[u.rol])}</td><td>${esc(u.location_id ? locName(u.location_id) : '—')}</td><td class="num"><div class="btn-row" style="justify-content:flex-end">${db.mode === 'supabase' ? `<button class="btn sm" data-rp="${u.id}" title="Le manda un mail para elegir una contraseña nueva">Recuperar contraseña</button>` : ''}<button class="btn sm" data-e="${u.id}">Editar</button></div></td></tr>`).join('')}</tbody></table></div></div>`;
+    $$('[data-rp]').forEach((b) => (b.onclick = async () => {
+      const u = users.find((x) => x.id === b.dataset.rp);
+      if (!confirm(`¿Mandar a ${u.email} un mail para elegir una contraseña nueva?`)) return;
+      b.disabled = true;
+      try { await db.resetPassword(u.email); toast(`Mail de recupero enviado a ${u.email}`); } catch (e) { err(e); b.disabled = false; }
+    }));
     $$('[data-e]').forEach((b) => (b.onclick = async () => {
       const u = users.find((x) => x.id === b.dataset.e);
       const r = await modalForm({ title: 'Editar usuario', fields: [

@@ -2,7 +2,12 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
 
 export async function createSupabaseDB(cfg) {
-  const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+  // El link del mail de recupero vuelve con "#...type=recovery" (o con un error si venció).
+  // Se lee antes de crear el cliente porque Supabase limpia la URL al procesarla.
+  const hashInicial = location.hash;
+  const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, { auth: { flowType: 'implicit', detectSessionInUrl: true } });
+  // Dirección a la que vuelve el mail: la misma página de la app, sin el #ruta
+  const appUrl = location.origin + location.pathname;
   const ok = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
   let profile = null;
   // Convierte un día local (YYYY-MM-DD) en rango ISO respetando la zona horaria del navegador
@@ -30,9 +35,22 @@ export async function createSupabaseDB(cfg) {
     mode: 'supabase',
     // ---- auth
     async getProfile() { return loadProfile(); },
-    async signIn(email, password) { ok(await sb.auth.signInWithPassword({ email, password })); return loadProfile(); },
+    async signIn(email, password) {
+      const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) throw new Error(/invalid login/i.test(error.message) ? 'Mail o contraseña incorrectos. Si no la recordás, usá "¿Olvidaste tu contraseña?".' : error.message);
+      return loadProfile();
+    },
     async signUp(email, password, nombre) { ok(await sb.auth.signUp({ email, password, options: { data: { nombre } } })); return loadProfile(); },
     async signOut() { await sb.auth.signOut(); profile = null; },
+    // ---- recupero de contraseña
+    async recoveryState() {
+      await sb.auth.getSession(); // espera a que Supabase procese el link del mail
+      const p = new URLSearchParams(hashInicial.replace(/^#\/?/, ''));
+      if (p.get('error_description')) return { error: p.get('error_description').replace(/\+/g, ' ') };
+      return { recovery: p.get('type') === 'recovery' };
+    },
+    async resetPassword(email) { ok(await sb.auth.resetPasswordForEmail(email.trim(), { redirectTo: appUrl })); },
+    async updatePassword(password) { ok(await sb.auth.updateUser({ password })); return loadProfile(); },
 
     // ---- maestros
     async listLocations() { return ok(await sb.from('locations').select('*').order('tipo').order('nombre')); },
