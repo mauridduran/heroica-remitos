@@ -1,0 +1,9 @@
+Informe de ventas por artículo
+Tienda: Funes
+
+Fecha;Código;Artículo;Unidades;Importe
+21/11/2026;PAN013;Pan lactal;12;54.000,00
+21/11/2026;LAM004;Medialuna de grasa;40;48.000,00
+21/11/2026;PAS015;Cookie New York;18;45.000,00
+21/11/2026;9999;Café con leche;80;240.000,00
+Total;;;150;387.000,00
