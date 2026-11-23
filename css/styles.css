@@ -131,6 +131,9 @@ th.sortable:hover { color: var(--text); }
 tbody tr.click { cursor: pointer; }
 tbody tr.click:hover { background: var(--surface-2); }
 tr.row-dif td { background: color-mix(in srgb, var(--red-bg) 55%, transparent); }
+tr.row-ok td { opacity: .55; }
+tr.row-ok.row-dif td { opacity: 1; }
+input.ck { width: 22px; height: 22px; accent-color: var(--green); cursor: pointer; }
 tfoot td { font-weight: 700; background: var(--surface-2); }
 .empty { padding: 28px; text-align: center; color: var(--muted); }
 
