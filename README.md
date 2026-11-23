@@ -42,6 +42,15 @@ Abrir http://localhost:8765 y elegir un usuario. Para ver el tiempo real, abrir 
 5. **Usuarios**: la **primera persona que se registra queda como administrador**. El resto se registra desde la pantalla de ingreso y el admin le asigna el rol (obrador o local) y su sede en *Configuración → Usuarios*.
    - Opcional: en Supabase → *Authentication → Providers → Email*, desactivar "Confirm email" para no tener que confirmar por mail.
 
+## Circuito de un remito (checklist 23/11/2026)
+
+- **N° de remito = N° del talonario de papel**: obligatorio al cargar, único por obrador + área (los anulados liberan el número). `crear_remito` recibe `nro_area`.
+- **Recepción con checklist**: el local tilda ✓ cada producto controlado; no se confirma sin todos tildados. El borrador queda en el navegador (`localStorage`).
+- **Estados**: En tránsito → Pendiente de recepción → Recibido completo / Recibido con diferencias → Pendiente de facturación → Facturado → Cerrado (facturado y sin diferencia pendiente). Se factura lo recibido; la diferencia se resuelve en paralelo.
+- **Diferencias** (`#/diferencias`, admin y obrador): Producción resuelve con motivo (merma, error de carga, faltante en traslado, sobrante, reposición, otro) vía `resolver_diferencia`.
+- Un remito recibido no se puede anular. Locales con `es_franquicia` y productos con `precio_franquicia`.
+- Migración: `supabase/migracion_2026-11-23_etapa1.sql` (ya incluida al final de `schema.sql`).
+
 ## Avisos al despachar (mail + WhatsApp)
 
 Cuando un obrador despacha un remito, la base dispara la Edge Function `aviso-despacho` (`supabase/functions/aviso-despacho/index.ts`), que:
