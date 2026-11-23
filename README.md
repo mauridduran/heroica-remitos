@@ -49,6 +49,8 @@ Abrir http://localhost:8765 y elegir un usuario. Para ver el tiempo real, abrir 
 - **Estados**: En tránsito → Pendiente de recepción → Recibido completo / Recibido con diferencias → Pendiente de facturación → Facturado → Cerrado (facturado y sin diferencia pendiente). Se factura lo recibido; la diferencia se resuelve en paralelo.
 - **Diferencias** (`#/diferencias`, admin y obrador): Producción resuelve con motivo (merma, error de carga, faltante en traslado, sobrante, reposición, otro) vía `resolver_diferencia`.
 - Un remito recibido no se puede anular. Locales con `es_franquicia` y productos con `precio_franquicia`.
+- **Reportes** (`#/reportes`, admin y obrador): top 10 productos, por sucursal, volumen mensual, diferencias por motivo, por área e historial de facturación; exporta a Excel (SheetJS, una hoja por tabla).
+- **Franquicias** (`#/franquicias`, admin): recibido a precio de franquicia vs costo y margen, y lista de precios exportable. Sin cambios de base (usa `es_franquicia` y `precio_franquicia`).
 - Migración: `supabase/migracion_2026-11-23_etapa1.sql` (ya incluida al final de `schema.sql`).
 
 ## Avisos al despachar (mail + WhatsApp)
