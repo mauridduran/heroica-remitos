@@ -3,7 +3,7 @@
 
 import { AREAS, PRODUCTOS } from './catalogo.js';
 
-const KEY = 'remitos_demo_v4';
+const KEY = 'remitos_demo_v5';
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 const clone = (o) => JSON.parse(JSON.stringify(o));
 // Día local (YYYY-MM-DD) de una fecha ISO
@@ -93,6 +93,8 @@ function seed() {
           rem.bultos_recibidos = { ...rem.bultos };
           rem.estado = dif ? 'con_diferencias' : 'recibido';
           rem.recibido_por = locUser; rem.recibido_at = day(d, h + 2, m + 10);
+          rem.llegado_por = locUser; rem.llegado_at = day(d, h + 1, m + 50);
+          if (d >= 3) { rem.facturado_por = 'u-admin'; rem.facturado_at = day(d - 1, 11, m); }
           ev(rem, rem.estado, dif ? dif + ' productos con diferencia' : 'Todo OK', locUser, rem.recibido_at);
           // ventas HioPos: se vende entre 70% y 100% de lo recibido, repartido en el día y el siguiente
           if (d > 0) for (const it of its) {
@@ -238,8 +240,24 @@ export function createDemoDB() {
         if (i.cantidad_recibida !== i.cantidad_enviada) dif++;
       }
       r.estado = dif ? 'con_diferencias' : 'recibido'; r.recibido_por = me.id; r.recibido_at = new Date().toISOString(); r.obs_recepcion = obs || ''; r.bultos_recibidos = bultos || null;
+      if (!r.llegado_at) { r.llegado_at = r.recibido_at; r.llegado_por = me.id; }
       save(event(r, r.estado, dif ? dif + ' productos con diferencia' : 'Todo OK'));
       return r.estado;
+    },
+    async marcarLlegado(id) {
+      const r = data.remitos.find((x) => x.id === id);
+      if (!(me.rol === 'admin' || (me.rol === 'local' && r.destino_id === me.location_id))) fail('No tenés permiso para este remito');
+      if (r.estado !== 'en_transito') fail('El remito no está en tránsito');
+      if (r.llegado_at) return;
+      r.llegado_at = new Date().toISOString(); r.llegado_por = me.id;
+      save(event(r, 'llegado', 'Pendiente de revisión'));
+    },
+    async marcarFacturado(id, nro) {
+      const r = data.remitos.find((x) => x.id === id);
+      if (me.rol !== 'admin') fail('Solo administración puede marcar la facturación');
+      if (!['recibido', 'con_diferencias'].includes(r.estado)) fail('Solo se puede facturar un remito ya recibido por el local');
+      r.facturado_at = new Date().toISOString(); r.facturado_por = me.id; r.nro_factura = nro || '';
+      save(event(r, 'facturado', nro ? 'Factura ' + nro : 'Cargado en facturación'));
     },
     async anularRemito(id, motivo) {
       const r = data.remitos.find((x) => x.id === id);

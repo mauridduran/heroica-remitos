@@ -41,7 +41,25 @@ const EVENTOS = {
   con_diferencias: { l: 'Recibido con diferencias', c: 'red', ico: '!' },
   anulado: { l: 'Anulado', c: 'gray', ico: '✕' },
   aviso: { l: 'Aviso enviado', c: 'blue', ico: '✉' },
+  llegado: { l: 'Llegó al local', c: 'amber', ico: '📦' },
+  facturado: { l: 'Cargado en facturación', c: 'green', ico: '$' },
 };
+// Circuito administrativo (solo lo ve administración)
+const ESTADOS_ADMIN = {
+  borrador: { l: 'Borrador', c: 'gray' },
+  enviado: { l: 'Enviado', c: 'amber' },
+  revision: { l: 'Pendiente de revisión', c: 'blue' },
+  facturacion: { l: 'Pendiente de carga de facturación', c: 'red' },
+  facturado: { l: 'Facturado', c: 'green' },
+  anulado: { l: 'Anulado', c: 'muted' },
+};
+const estadoAdmin = (r) => {
+  if (r.estado === 'anulado') return 'anulado';
+  if (r.estado === 'borrador') return 'borrador';
+  if (r.estado === 'en_transito') return r.llegado_at ? 'revision' : 'enviado';
+  return r.facturado_at ? 'facturado' : 'facturacion';
+};
+const badgeAdmin = (r) => { const e = ESTADOS_ADMIN[estadoAdmin(r)]; return `<span class="badge b-${e.c}">${esc(e.l)}</span>`; };
 const ROLES = { admin: 'Administración', obrador: 'Obrador', local: 'Local', pendiente: 'Pendiente' };
 const badge = (estado) => { const e = ESTADOS[estado] || { l: estado, c: 'gray' }; return `<span class="badge b-${e.c}">${esc(e.l)}</span>`; };
 
@@ -103,7 +121,9 @@ const can = {
   crear: () => ['admin', 'obrador'].includes(me.rol),
   admin: () => me.rol === 'admin',
   despachar: (r) => r.estado === 'borrador' && (me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id)),
-  recibir: (r) => r.estado === 'en_transito' && (me.rol === 'admin' || (me.rol === 'local' && r.destino_id === me.location_id)),
+  llegar: (r) => r.estado === 'en_transito' && !r.llegado_at && (me.rol === 'admin' || (me.rol === 'local' && r.destino_id === me.location_id)),
+  recibir: (r) => r.estado === 'en_transito' && (me.rol === 'admin' || (me.rol === 'local' && r.destino_id === me.location_id && !!r.llegado_at)),
+  facturar: (r) => me.rol === 'admin' && ['recibido', 'con_diferencias'].includes(r.estado) && !r.facturado_at,
   anular: (r) => r.estado !== 'anulado' && (me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id && ['borrador', 'en_transito'].includes(r.estado))),
 };
 
@@ -335,17 +355,36 @@ async function viewTablero(v) {
     const difs7 = rems.filter((r) => r.estado === 'con_diferencias' && r.recibido_at >= new Date(Date.now() - 7 * 864e5).toISOString());
     const paraMi = me.rol === 'local' ? transito.filter((r) => r.destino_id === me.location_id) : [];
     const newest = S.lastEvt?.numero;
+    const esAdmin = me.rol === 'admin';
+    const porEstado = (k) => rems.filter((r) => estadoAdmin(r) === k);
+    const pendFact = esAdmin ? porEstado('facturacion').sort((a, b) => (a.recibido_at || '').localeCompare(b.recibido_at || '')) : [];
 
     v.innerHTML = `
       <div class="page-head"><div><h1>Tablero en vivo</h1><p>${esc(me.location_id ? locName(me.location_id) : 'Todos los obradores y locales')} · se actualiza solo</p></div>
       ${can.crear() ? '<a class="btn primary" href="#/remitos/nuevo">+ Nuevo remito</a>' : ''}</div>
-      ${paraMi.length ? `<div class="callout"><span>🚚 Tenés ${paraMi.length} remito${paraMi.length > 1 ? 's' : ''} en camino para recibir</span><a class="btn" href="#/remitos/${paraMi[0].id}">Controlar recepción</a></div>` : ''}
+      ${paraMi.length ? `<div class="callout"><span>🚚 Tenés ${paraMi.length} remito${paraMi.length > 1 ? 's' : ''} en camino para recibir</span><a class="btn" href="#/remitos/${paraMi[0].id}">${paraMi[0].llegado_at ? 'Controlar recepción' : 'Abrir remito'}</a></div>` : ''}
+      ${esAdmin ? `<h2 style="margin:0 0 8px">Circuito administrativo <span class="small muted">(últimos 30 días)</span></h2>
+      <div class="kpis">
+        <div class="card kpi warn"><div class="label">Enviado</div><div class="value">${porEstado('enviado').length}</div><div class="sub">en camino al local</div></div>
+        <div class="card kpi"><div class="label">Pendiente de revisión</div><div class="value" style="color:var(--blue)">${porEstado('revision').length}</div><div class="sub">llegó, el local está controlando</div></div>
+        <div class="card kpi ${pendFact.length ? 'alert' : ''}"><div class="label">Pendiente de carga de facturación</div><div class="value">${pendFact.length}</div><div class="sub">controlado por el local, falta facturar</div></div>
+        <div class="card kpi ok"><div class="label">Facturado</div><div class="value">${porEstado('facturado').length}</div><div class="sub">cerrados</div></div>
+      </div>` : ''}
       <div class="kpis">
         <div class="card kpi warn"><div class="label">En tránsito ahora</div><div class="value">${transito.length}</div><div class="sub">${fmtN(transito.reduce((s, r) => s + r.n_items, 0))} líneas de productos</div></div>
         <div class="card kpi ok"><div class="label">Recibidos hoy</div><div class="value">${recHoy.length}</div><div class="sub">${recHoy.filter((r) => r.estado === 'con_diferencias').length} con diferencias</div></div>
         <div class="card kpi ${difs7.length ? 'alert' : ''}"><div class="label">Con diferencias (7 días)</div><div class="value">${difs7.length}</div><div class="sub">faltantes o roturas en recepción</div></div>
         <div class="card kpi"><div class="label">Borradores sin despachar</div><div class="value">${borr.length}</div><div class="sub">&nbsp;</div></div>
       </div>
+      ${esAdmin && pendFact.length ? `<section class="card" style="margin-bottom:16px">
+          <div class="card-head"><h2>Pendientes de carga de facturación</h2><a class="small" href="#/remitos" id="ver-fact">Ver todos</a></div>
+          <div class="list">${pendFact.slice(0, 8).map((r) => `
+            <a class="list-item" href="#/remitos/${r.id}" style="color:inherit">
+              <div class="main"><div class="title">${label(r)} · ${esc(locName(r.destino_id))} <span class="muted small">${esc(area(r.area_id)?.nombre || '')}</span></div>
+              <div class="small muted">recibido ${fmtFH(r.recibido_at)}${r.estado === 'con_diferencias' ? ' · <span style="color:var(--red)">con diferencias</span>' : ''}</div></div>
+              <span class="btn sm">Facturar</span>
+            </a>`).join('')}</div>
+        </section>` : ''}
       <div class="grid cols-2">
         <section class="card">
           <div class="card-head"><h2>En tránsito</h2><a class="small" href="#/remitos">Ver todos</a></div>
@@ -353,7 +392,7 @@ async function viewTablero(v) {
             <a class="list-item" href="#/remitos/${r.id}" style="color:inherit">
               <div class="main"><div class="title">${label(r)} · ${esc(locName(r.destino_id))} <span class="muted small">${esc(area(r.area_id)?.nombre || '')}</span></div>
               <div class="small muted">desde ${esc(locName(r.origen_id))} · salió <span data-ago="${r.despachado_at}">${hace(r.despachado_at)}</span> · ${r.n_items} productos</div></div>
-              ${can.recibir(r) ? '<span class="btn sm primary">Recibir</span>' : badge(r.estado)}
+              ${can.llegar(r) ? '<span class="btn sm primary">Llegó</span>' : can.recibir(r) ? '<span class="btn sm primary">Controlar</span>' : esAdmin ? badgeAdmin(r) : badge(r.estado)}
             </a>`).join('') : '<div class="empty">No hay remitos en camino</div>'}
           </div>
         </section>
@@ -371,6 +410,7 @@ async function viewTablero(v) {
   };
   await draw();
   S.refresh = draw;
+  v.addEventListener('click', (e) => { if (e.target.id === 'ver-fact') { (S.remFilters ||= { desde: haceDias(30), hasta: hoy(), estado: '', origen: '', destino: '', area: '', q: '' }).estado = 'adm:facturacion'; } });
 }
 
 // ======================================================================
@@ -384,7 +424,9 @@ async function viewRemitos(v) {
     <div class="filters card card-pad">
       <label class="field"><span>Desde</span><input type="date" id="f-desde" value="${f.desde}"></label>
       <label class="field"><span>Hasta</span><input type="date" id="f-hasta" value="${f.hasta}"></label>
-      <label class="field"><span>Estado</span><select id="f-estado"><option value="">Todos</option>${Object.entries(ESTADOS).map(([k, e]) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${e.l}</option>`).join('')}</select></label>
+      <label class="field"><span>Estado</span><select id="f-estado"><option value="">Todos</option>${me.rol === 'admin'
+        ? `<optgroup label="Circuito administrativo">${Object.entries(ESTADOS_ADMIN).map(([k, e]) => `<option value="adm:${k}" ${f.estado === 'adm:' + k ? 'selected' : ''}>${e.l}</option>`).join('')}</optgroup><optgroup label="Recepción">${['recibido', 'con_diferencias'].map((k) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${ESTADOS[k].l}</option>`).join('')}</optgroup>`
+        : Object.entries(ESTADOS).map(([k, e]) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${e.l}</option>`).join('')}</select></label>
       ${me.rol !== 'obrador' ? `<label class="field"><span>Obrador</span><select id="f-origen"><option value="">Todos</option>${obradores().map((l) => `<option value="${l.id}" ${f.origen === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
       ${me.rol !== 'local' ? `<label class="field"><span>Local</span><select id="f-destino"><option value="">Todos</option>${locales().map((l) => `<option value="${l.id}" ${f.destino === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
       <label class="field"><span>Área</span><select id="f-area"><option value="">Todas</option>${areas.map((a) => `<option value="${a.id}" ${f.area === a.id ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('')}</select></label>
@@ -394,19 +436,20 @@ async function viewRemitos(v) {
   let rows = [];
   const draw = async () => {
     const all = await db.listRemitos({ desde: f.desde, hasta: f.hasta });
-    rows = all.filter((r) => (!f.estado || r.estado === f.estado) && (!f.origen || r.origen_id === f.origen) && (!f.destino || r.destino_id === f.destino) && (!f.area || r.area_id === f.area) && (!f.q || label(r).includes(f.q.trim()) || (r.nro_papel || '').includes(f.q.trim())));
+    const okEstado = (r) => !f.estado || (f.estado.startsWith('adm:') ? estadoAdmin(r) === f.estado.slice(4) : r.estado === f.estado);
+    rows = all.filter((r) => okEstado(r) && (!f.origen || r.origen_id === f.origen) && (!f.destino || r.destino_id === f.destino) && (!f.area || r.area_id === f.area) && (!f.q || label(r).includes(f.q.trim()) || (r.nro_papel || '').includes(f.q.trim())));
     $('#tbl').innerHTML = rows.length ? `<table>
       <thead><tr><th>N°</th><th>Área</th><th>Creado</th><th>Obrador</th><th>Local</th><th class="num">Productos</th><th>Estado</th><th>Despachado</th><th>Recibido</th></tr></thead>
       <tbody>${rows.map((r) => `<tr class="click ${r.estado === 'con_diferencias' ? 'row-dif' : ''}" data-id="${r.id}">
         <td class="nowrap"><b>${label(r)}</b></td><td>${esc(area(r.area_id)?.nombre || '—')}</td><td>${fmtF(r.creado_at)}</td><td>${esc(locName(r.origen_id))}</td><td>${esc(locName(r.destino_id))}</td>
-        <td class="num">${r.n_items}</td><td>${badge(r.estado)}</td><td class="small">${fmtFH(r.despachado_at)}</td><td class="small">${fmtFH(r.recibido_at)}</td></tr>`).join('')}</tbody>
+        <td class="num">${r.n_items}</td><td>${me.rol === 'admin' ? badgeAdmin(r) + (r.estado === 'con_diferencias' ? ' <span class="badge b-red">Dif.</span>' : '') : badge(r.estado)}</td><td class="small">${fmtFH(r.despachado_at)}</td><td class="small">${fmtFH(r.recibido_at)}</td></tr>`).join('')}</tbody>
       </table>` : '<div class="empty">No hay remitos con estos filtros</div>';
     $$('#tbl tr[data-id]').forEach((tr) => (tr.onclick = () => (location.hash = '#/remitos/' + tr.dataset.id)));
   };
   const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
   bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-estado', 'estado'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-q', 'q');
   $('#csv').onclick = () => downloadCSV('remitos.csv', [['N°', 'Área', 'Creado', 'Obrador', 'Local', 'Productos', 'Estado', 'Despachado', 'Recibido'],
-    ...rows.map((r) => [label(r), area(r.area_id)?.nombre || '', fmtFH(r.creado_at), locName(r.origen_id), locName(r.destino_id), r.n_items, ESTADOS[r.estado]?.l, fmtFH(r.despachado_at), fmtFH(r.recibido_at)])]);
+    ...rows.map((r) => [label(r), area(r.area_id)?.nombre || '', fmtFH(r.creado_at), locName(r.origen_id), locName(r.destino_id), r.n_items, me.rol === 'admin' ? ESTADOS_ADMIN[estadoAdmin(r)].l + (r.estado === 'con_diferencias' ? ' (con diferencias)' : '') : ESTADOS[r.estado]?.l, fmtFH(r.despachado_at), fmtFH(r.recibido_at)])]);
   await draw();
   S.refresh = draw;
 }
@@ -540,16 +583,18 @@ async function viewDetalle(v, id) {
     const totEnv = items.reduce((s, i) => s + i.cantidad_enviada, 0);
     const totRec = items.reduce((s, i) => s + (i.cantidad_recibida || 0), 0);
     const valDif = items.reduce((s, i) => s + ((i.cantidad_recibida ?? i.cantidad_enviada) - i.cantidad_enviada) * (i.p.precio_costo || 0), 0);
-    const evC = user('creado'), evD = user('despachado'), evR = user('recibido');
+    const evC = user('creado'), evD = user('despachado'), evR = user('recibido'), evL = user('llegado'), evF = user('facturado');
 
     v.innerHTML = `
       <div class="page-head">
         <div><a class="small no-print" href="#/remitos">← Remitos</a>
-          <h1 style="margin-top:6px">Remito ${label(r)} ${badge(r.estado)}</h1>
+          <h1 style="margin-top:6px">Remito ${label(r)} ${me.rol === 'admin' ? badgeAdmin(r) + (r.estado === 'con_diferencias' ? ' ' + badge('con_diferencias') : '') : badge(r.estado)}</h1>
           <p class="route"><b>${esc(locName(r.origen_id))}</b><span class="arrow">→</span><b>${esc(locName(r.destino_id))}</b></p></div>
         <div class="btn-row no-print">
           ${can.despachar(r) ? '<button class="btn primary" id="b-desp">Despachar 🚚</button>' : ''}
-          ${can.recibir(r) && !recibiendo ? '<button class="btn primary big" id="b-rec">Controlar recepción</button>' : ''}
+          ${can.llegar(r) ? '<button class="btn primary big" id="b-lleg">📦 Llegó al local</button>' : ''}
+          ${can.recibir(r) && !recibiendo ? `<button class="btn ${r.llegado_at ? 'primary big' : ''}" id="b-rec">Controlar recepción</button>` : ''}
+          ${can.facturar(r) ? '<button class="btn primary big" id="b-fact">Marcar como cargado en facturación</button>' : ''}
           <button class="btn" onclick="window.print()">Imprimir</button>
           ${can.anular(r) ? '<button class="btn danger" id="b-anul">Anular</button>' : ''}
         </div>
@@ -561,12 +606,15 @@ async function viewDetalle(v, id) {
         <div><span>Bultos enviados</span><b>${bul(r.bultos)}</b></div>
         ${r.bultos_recibidos ? `<div><span>Bultos recibidos</span><b style="color:${BULTOS.some((b) => (r.bultos?.[b] || 0) !== (r.bultos_recibidos?.[b] || 0)) ? 'var(--red)' : ''}">${bul(r.bultos_recibidos)}</b></div>` : ''}
         ${r.nro_papel ? `<div><span>N° remito papel</span><b>${esc(r.nro_papel)}</b></div>` : ''}
+        ${me.rol === 'admin' && r.facturado_at ? `<div><span>Facturado</span><b>${fmtFH(r.facturado_at)}${r.nro_factura ? ' · ' + esc(r.nro_factura) : ''}</b></div>` : ''}
       </div>
       ${r.estado === 'anulado' ? `<div class="callout">Remito anulado: ${esc(r.anulado_motivo || 'sin motivo')}</div>` : ''}
       <div class="steps" style="margin-bottom:16px">
         <div class="step done"><div class="t">1 · Creado</div><div class="d">${fmtFH(r.creado_at)} · ${esc(evC?.usuario_nombre || '')}</div></div>
         <div class="step ${r.despachado_at ? 'done' : ''}"><div class="t">2 · Despachado</div><div class="d">${r.despachado_at ? `${fmtFH(r.despachado_at)} · ${esc(evD?.usuario_nombre || '')}` : 'Pendiente'}</div></div>
-        <div class="step ${recibido ? (r.estado === 'con_diferencias' ? 'dif' : 'done') : ''}"><div class="t">3 · Recibido en local</div><div class="d">${recibido ? `${fmtFH(r.recibido_at)} · ${esc(evR?.usuario_nombre || '')}` : r.despachado_at ? `En camino · <span data-ago="${r.despachado_at}">${hace(r.despachado_at)}</span>` : 'Pendiente'}</div></div>
+        <div class="step ${r.llegado_at ? 'done' : ''}"><div class="t">3 · Llegó al local</div><div class="d">${r.llegado_at ? `${fmtFH(r.llegado_at)}${evL?.usuario_nombre ? ' · ' + esc(evL.usuario_nombre) : ''}` : r.despachado_at && r.estado !== 'anulado' ? `En camino · <span data-ago="${r.despachado_at}">${hace(r.despachado_at)}</span>` : 'Pendiente'}</div></div>
+        <div class="step ${recibido ? (r.estado === 'con_diferencias' ? 'dif' : 'done') : ''}"><div class="t">4 · Controlado por el local</div><div class="d">${recibido ? `${fmtFH(r.recibido_at)} · ${esc(evR?.usuario_nombre || '')}` : r.llegado_at ? 'Pendiente de revisión' : 'Pendiente'}</div></div>
+        ${me.rol === 'admin' ? `<div class="step ${r.facturado_at ? 'done' : ''}"><div class="t">5 · Facturado</div><div class="d">${r.facturado_at ? `${fmtFH(r.facturado_at)} · ${esc(evF?.usuario_nombre || '')}` : recibido ? 'Pendiente de carga de facturación' : 'Pendiente'}</div></div>` : ''}
       </div>
       ${r.observaciones ? `<p><b>Observaciones del obrador:</b> ${esc(r.observaciones)}</p>` : ''}
       ${r.obs_recepcion ? `<p><b>Observaciones de recepción:</b> ${esc(r.obs_recepcion)}</p>` : ''}
@@ -602,6 +650,17 @@ async function viewDetalle(v, id) {
       try { await db.anularRemito(r.id, res.motivo); toast('Remito anulado'); draw(); } catch (e) { err(e); }
     });
     $('#b-rec') && ($('#b-rec').onclick = () => { recibiendo = true; S.refresh = null; draw(); });
+    $('#b-lleg') && ($('#b-lleg').onclick = async (e) => {
+      e.currentTarget.disabled = true;
+      try { await db.marcarLlegado(r.id); toast('Llegada registrada. Ahora controlá lo que llegó.'); recibiendo = true; S.refresh = null; draw(); } catch (ex) { err(ex); e.currentTarget.disabled = false; }
+    });
+    $('#b-fact') && ($('#b-fact').onclick = async () => {
+      const res = await modalForm({ title: `Remito ${label(r)} · cargado en facturación`, submit: 'Marcar como facturado',
+        html: `<p class="muted" style="margin:0">Confirmá que cargaste en facturación lo que el local controló${r.estado === 'con_diferencias' ? ' (este remito tiene diferencias: facturá lo recibido, no lo enviado)' : ''}.</p>`,
+        fields: [{ name: 'nro', label: 'N° de factura (opcional)' }] });
+      if (!res) return;
+      try { await db.marcarFacturado(r.id, res.nro || ''); toast('Remito marcado como facturado'); draw(); } catch (e) { err(e); }
+    });
     if (recibiendo) {
       const upd = (inp) => {
         const env = Number(inp.dataset.env), val = inp.value;
@@ -928,7 +987,7 @@ async function viewConfig(v) {
       const partes = [];
       if (a?.email) partes.push('✉ ' + esc(a.email));
       if (a?.whatsapp) partes.push((a.callmebot_apikey ? '💬 ' : '💬 (sin código) ') + esc(a.whatsapp));
-      if (tipo === 'obrador') return a?.email ? '✉ ' + esc(a.email) + '<br><span class="muted">copia de todo lo que sale</span>' : '<span class="muted">—</span>';
+      if (tipo === 'obrador') return partes.length ? partes.join('<br>') + '<br><span class="muted">despachos y recepciones</span>' : '<span class="muted">—</span>';
       return partes.length ? partes.join('<br>') : '<span class="muted">Solo encargados y admin</span>';
     };
     out.innerHTML = `<div class="card"><div class="card-head"><h2>Obradores y locales</h2><button class="btn primary sm" id="add">+ Agregar</button></div><div class="table-wrap"><table>
@@ -944,7 +1003,9 @@ async function viewConfig(v) {
         { name: 'codigo_hiopos', label: 'Código / nombre de tienda en HioPos', value: l.codigo_hiopos },
         { name: 'activo', label: 'Estado', type: 'select', value: String(l.activo !== false), options: yesno },
         ...(l.tipo === 'obrador' ? [
-          { name: 'av_email', label: 'Mail que recibe copia de todos los remitos de este obrador (opcional, varios separados por coma)', value: av.email || '' },
+          { name: 'av_email', label: 'Mail del obrador: recibe cada despacho y cada recepción (opcional, varios separados por coma)', value: av.email || '' },
+          { name: 'av_whatsapp', label: 'WhatsApp del obrador (con código de país, ej. +5493415551234)', value: av.whatsapp || '' },
+          { name: 'av_apikey', label: 'Código CallMeBot (apikey) de ese WhatsApp', value: av.callmebot_apikey || '' },
         ] : [
           { name: 'av_email', label: 'Mail de avisos del local (opcional, varios separados por coma)', value: av.email || '' },
           { name: 'av_whatsapp', label: 'WhatsApp de avisos (con código de país, ej. +5493415551234)', value: av.whatsapp || '' },

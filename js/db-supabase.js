@@ -95,6 +95,8 @@ export async function createSupabaseDB(cfg) {
     async recibirRemito(id, items, obs, bultos) {
       return ok(await sb.rpc('recibir_remito', { p_id: id, p_items: items.map((i) => ({ id: i.id, cantidad_recibida: i.cantidad_recibida === '' ? null : Number(i.cantidad_recibida), obs: i.obs || '' })), p_obs: obs || '', p_bultos: bultos || null }));
     },
+    async marcarLlegado(id) { ok(await sb.rpc('marcar_llegado', { p_id: id })); },
+    async marcarFacturado(id, nro) { ok(await sb.rpc('marcar_facturado', { p_id: id, p_nro: nro || '' })); },
     async anularRemito(id, motivo) { ok(await sb.rpc('anular_remito', { p_id: id, p_motivo: motivo })); },
     async listEventos(limit = 30) { return ok(await sb.from('remito_eventos').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit)); },
 
