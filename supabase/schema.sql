@@ -17,6 +17,8 @@ create table if not exists locations (
   activo        boolean not null default true,
   created_at    timestamptz not null default now()
 );
+-- Obrador que abastece a cada local (filtra el destino al cargar un remito)
+alter table locations add column if not exists obrador_id uuid references locations;
 
 -- Áreas de producción: cada una tiene su talonario (prefijo del N° de remito)
 create table if not exists areas (
@@ -410,8 +412,14 @@ end $$;
 insert into locations (nombre, tipo) values
   ('Obrador Guemes (Rosario)', 'obrador'),
   ('Obrador Palermo (Buenos Aires)', 'obrador'),
-  ('Guemes', 'local'),
-  ('Alto Rosario', 'local'),
   ('Funes', 'local'),
-  ('Córdoba', 'local')
+  ('Florida', 'local'),
+  ('Alto Rosario', 'local'),
+  ('Centro', 'local'),
+  ('DOT', 'local')
 on conflict (nombre) do nothing;
+
+update locations set obrador_id = (select id from locations where nombre = 'Obrador Guemes (Rosario)')
+where nombre in ('Funes', 'Florida', 'Alto Rosario', 'Centro');
+update locations set obrador_id = (select id from locations where nombre = 'Obrador Palermo (Buenos Aires)')
+where nombre = 'DOT';
