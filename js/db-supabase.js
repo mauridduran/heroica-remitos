@@ -128,6 +128,23 @@ export async function createSupabaseDB(cfg) {
       return rows.length;
     },
 
+    // ---- sincronización HioPos (Bridge ICG)
+    async hioposEstado() {
+      const [aj, logs] = await Promise.all([sb.from('ajustes').select('*'), sb.from('sync_log').select('*').order('id', { ascending: false }).limit(8)]);
+      return { ajustes: ok(aj), logs: ok(logs) };
+    },
+    async saveAjuste(clave, valor) { ok(await sb.from('ajustes').upsert({ clave, valor, updated_at: new Date().toISOString() })); },
+    async guardarCredHiopos(email, password) { ok(await sb.rpc('guardar_credenciales_hiopos', { p_email: email, p_password: password })); },
+    async hioposSync(body) {
+      const { data, error } = await sb.functions.invoke('sync-hiopos', { body });
+      if (error) {
+        let msg = error.message;
+        try { const j = await error.context.json(); msg = j.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      return data;
+    },
+
     // ---- tiempo real
     subscribe(cb) {
       const ch = sb.channel('remitos-live')

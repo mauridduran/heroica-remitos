@@ -312,6 +312,12 @@ export function createDemoDB() {
       return n;
     },
 
+    // ---- sincronización HioPos: solo existe en la app online
+    async hioposEstado() { return { ajustes: [], logs: [], demo: true }; },
+    async saveAjuste() { fail('En modo demo no se guarda la configuración de HioPos'); },
+    async guardarCredHiopos() { fail('En modo demo no se guardan credenciales'); },
+    async hioposSync() { fail('La sincronización con HioPos funciona solo en la app online'); },
+
     // ---- tiempo real
     subscribe(cb) { subs.add(cb); return () => subs.delete(cb); },
   };

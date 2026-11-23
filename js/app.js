@@ -1195,7 +1195,9 @@ async function viewVentas(v) {
   if (!can.admin()) { v.innerHTML = '<div class="empty">Solo administración</div>'; return; }
   const st = { headers: [], data: [], map: {}, fechaFija: haceDias(1), localFijo: '' };
   v.innerHTML = `
-    <div class="page-head"><div><h1>Ventas HioPos</h1><p>Importá el informe de ventas por artículo para contrastarlo contra lo enviado</p></div></div>
+    <div class="page-head"><div><h1>Ventas HioPos</h1><p>Las ventas se traen solas desde HioPos; también podés importar un informe a mano</p></div></div>
+    <section class="card" style="margin-bottom:16px" id="sync"></section>
+    <h2 style="margin:0 0 8px">Importar un informe a mano</h2>
     <div class="grid cols-2" style="margin-bottom:16px">
       <div class="card card-pad">
         <h2 style="margin-bottom:8px">Cómo exportar desde HioPos</h2>
@@ -1211,6 +1213,77 @@ async function viewVentas(v) {
     </div>
     <div id="map"></div>
     <section class="card" style="margin-top:16px"><div class="card-head"><h2>Ventas cargadas (últimos 14 días)</h2></div><div class="table-wrap" id="cob"></div></section>`;
+
+  // ---- Sincronización automática con HioPos (Bridge ICG)
+  const drawSync = async () => {
+    const box = $('#sync');
+    let est;
+    try { est = await db.hioposEstado(); } catch (e) { box.innerHTML = `<div class="card-pad small muted">No se pudo leer la configuración de HioPos: ${esc(e.message)}</div>`; return; }
+    const aj = (k) => est.ajustes.find((a) => a.clave === k)?.valor || '';
+    const usuario = aj('hiopos_usuario'), guid = aj('hiopos_export_id');
+    const listo = usuario && guid;
+    const ult = est.logs.find((l) => l.origen !== 'prueba');
+    const det = (l) => {
+      const d = l.detalle || {};
+      if (!l.fin) return 'en curso…';
+      if (!l.ok) return `<span style="color:var(--red)">${esc(d.error || 'error')}</span>`;
+      if (d.prueba) return `prueba OK · ${fmtN(d.filas)} filas leídas`;
+      const st = Object.keys(d.sin_tienda || {});
+      return `${fmtN(l.filas)} filas → ${fmtN(l.guardadas)} ventas guardadas${d.sin_producto ? ` · ${d.sin_producto} sin producto asociado` : ''}${st.length ? ` · <span style="color:var(--amber)">tiendas sin reconocer: ${esc(st.join(', '))}</span>` : ''}`;
+    };
+    box.innerHTML = `
+      <div class="card-head"><div><h2>Sincronización automática con HioPos</h2>
+        <div class="small muted">Se conecta al Bridge de HioPos (ICG) a las 0, 6, 12 y 18 hs y trae las ventas de los últimos 3 días de todos los locales y obradores.</div></div>
+        <span class="badge ${est.demo ? 'b-gray' : listo ? (ult?.ok ? 'b-green' : ult ? 'b-red' : 'b-amber') : 'b-amber'}">${est.demo ? 'Solo online' : !listo ? 'Falta configurar' : !ult ? 'Sin correr todavía' : ult.ok ? 'Funcionando' : 'Con error'}</span></div>
+      <div class="card-pad grid">
+        <div class="form-grid">
+          <div class="field"><span>Usuario de HioPos (HiOffice)</span><div style="display:flex;gap:8px;align-items:center"><b>${esc(usuario || 'sin cargar')}</b><button class="btn sm" id="s-cred">${usuario ? 'Cambiar' : 'Cargar'} usuario y contraseña</button></div></div>
+          <label class="field"><span>GUID del dashboard de exportación de ventas</span><div style="display:flex;gap:8px"><input id="s-guid" value="${esc(guid)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="flex:1;min-width:0"><button class="btn sm" id="s-gsave">Guardar</button></div></label>
+        </div>
+        <div class="filters" style="align-items:flex-end">
+          <label class="field"><span>Desde</span><input type="date" id="s-desde" value="${haceDias(3)}"></label>
+          <label class="field"><span>Hasta</span><input type="date" id="s-hasta" value="${hoy()}"></label>
+          <button class="btn" id="s-probar" ${listo ? '' : 'disabled'}>Probar conexión</button>
+          <button class="btn primary" id="s-run" ${listo ? '' : 'disabled'}>Sincronizar ahora</button>
+        </div>
+        <div id="s-out"></div>
+        ${est.logs.length ? `<div class="table-wrap"><table><thead><tr><th>Cuándo</th><th>Tipo</th><th>Rango</th><th>Resultado</th></tr></thead><tbody>
+          ${est.logs.map((l) => `<tr><td class="small nowrap">${fmtFH(l.inicio)}</td><td class="small">${esc({ automatica: 'Automática', manual: 'Manual', prueba: 'Prueba' }[l.origen] || l.origen || '')}</td><td class="small nowrap">${l.desde ? fmtF(l.desde + 'T12:00') + ' – ' + fmtF(l.hasta + 'T12:00') : ''}</td><td class="small">${det(l)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      </div>`;
+    $('#s-cred').onclick = async () => {
+      const r = await modalForm({ title: 'Usuario de HioPos', submit: 'Guardar',
+        html: '<p class="muted" style="margin:0">El mismo mail y contraseña con los que se entra a HiOffice / HioPos Cloud. Se guardan cifrados en la base y nadie los puede ver desde la app.</p>',
+        fields: [{ name: 'email', label: 'Mail', type: 'email', value: usuario, required: true }, { name: 'pass', label: 'Contraseña', type: 'password', required: true }] });
+      if (!r) return;
+      try { await db.guardarCredHiopos(r.email, r.pass); toast('Usuario de HioPos guardado'); drawSync(); } catch (e) { err(e); }
+    };
+    $('#s-gsave').onclick = async () => {
+      const g = $('#s-guid').value.trim();
+      if (g && !/^[0-9a-f-]{20,}$/i.test(g)) return toast('El GUID tiene el formato xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', { err: true });
+      try { await db.saveAjuste('hiopos_export_id', g); toast('GUID guardado'); drawSync(); } catch (e) { err(e); }
+    };
+    const correr = async (modo, btn) => {
+      const desde = $('#s-desde').value, hasta = $('#s-hasta').value;
+      if (!okFecha(desde) || !okFecha(hasta) || desde > hasta) return toast('Revisá el rango de fechas', { err: true });
+      btn.disabled = true; const t = btn.textContent; btn.textContent = modo === 'probar' ? 'Probando…' : 'Sincronizando…';
+      $('#s-out').innerHTML = '';
+      try {
+        const r = await db.hioposSync({ modo, desde, hasta });
+        if (modo === 'probar') {
+          const cols = r.columnas || [];
+          $('#s-out').innerHTML = `<div class="callout info"><span>Conexión OK: ${fmtN(r.filas)} filas en el rango. Columnas detectadas: ${Object.entries(r.mapeo || {}).map(([k, c]) => `${k} → <b>${esc(c || '—')}</b>`).join(' · ')}</span></div>
+            ${r.muestra?.length ? `<div class="table-wrap"><table><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.muestra.map((f) => `<tr>${cols.map((c) => `<td class="small">${esc(f[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}`;
+        } else {
+          toast(`Sincronizado: ${fmtN(r.guardadas)} ventas guardadas`);
+          cobertura();
+        }
+      } catch (e) { err(e); }
+      btn.disabled = false; btn.textContent = t; if (modo !== 'probar') drawSync();
+    };
+    $('#s-probar').onclick = (e) => correr('probar', e.currentTarget);
+    $('#s-run').onclick = (e) => correr('manual', e.currentTarget);
+  };
+  drawSync();
 
   const cobertura = async () => {
     const vs = await db.listVentas(haceDias(14), hoy());
