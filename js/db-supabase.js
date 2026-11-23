@@ -68,6 +68,8 @@ export async function createSupabaseDB(cfg) {
       const { id, ...rest } = p;
       ok(id ? await sb.from('products').update(rest).eq('id', id) : await sb.from('products').insert(rest));
     },
+    async listAvisos() { return ok(await sb.from('location_avisos').select('*')); },
+    async saveAvisos(a) { ok(await sb.from('location_avisos').upsert({ ...a, updated_at: new Date().toISOString() })); },
     async listProfiles() { return ok(await sb.from('profiles').select('*').order('created_at')); },
     async saveProfile(p) { const { id, rol, location_id, nombre } = p; ok(await sb.from('profiles').update({ rol, location_id, nombre }).eq('id', id)); },
 

@@ -176,6 +176,12 @@ export function createDemoDB() {
       if (p.id) Object.assign(data.products.find((x) => x.id === p.id), p); else data.products.push({ ...p, id: uid(), activo: true });
       save({ tipo: 'maestros' });
     },
+    async listAvisos() { return clone(data.avisos || []); },
+    async saveAvisos(a) {
+      if (me.rol !== 'admin') fail('Solo admin');
+      data.avisos = (data.avisos || []).filter((x) => x.location_id !== a.location_id).concat([a]);
+      save({ tipo: 'maestros' });
+    },
     async listProfiles() { return clone(data.profiles); },
     async saveProfile(p) { if (me.rol !== 'admin') fail('Solo admin'); Object.assign(data.profiles.find((x) => x.id === p.id), p); save({ tipo: 'maestros' }); },
 

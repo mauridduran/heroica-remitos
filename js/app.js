@@ -40,6 +40,7 @@ const EVENTOS = {
   recibido: { l: 'Recibido OK', c: 'green', ico: '✓' },
   con_diferencias: { l: 'Recibido con diferencias', c: 'red', ico: '!' },
   anulado: { l: 'Anulado', c: 'gray', ico: '✕' },
+  aviso: { l: 'Aviso enviado', c: 'blue', ico: '✉' },
 };
 const ROLES = { admin: 'Administración', obrador: 'Obrador', local: 'Local', pendiente: 'Pendiente' };
 const badge = (estado) => { const e = ESTADOS[estado] || { l: estado, c: 'gray' }; return `<span class="badge b-${e.c}">${esc(e.l)}</span>`; };
@@ -922,19 +923,38 @@ async function viewConfig(v) {
   const yesno = [{ value: 'true', label: 'Activo' }, { value: 'false', label: 'Inactivo' }];
 
   if (tab === 'locs') {
+    const avisos = await db.listAvisos();
+    const avisoTxt = (a) => {
+      const partes = [];
+      if (a?.email) partes.push('✉ ' + esc(a.email));
+      if (a?.whatsapp) partes.push((a.callmebot_apikey ? '💬 ' : '💬 (sin código) ') + esc(a.whatsapp));
+      return partes.length ? partes.join('<br>') : '<span class="muted">Solo encargados y admin</span>';
+    };
     out.innerHTML = `<div class="card"><div class="card-head"><h2>Obradores y locales</h2><button class="btn primary sm" id="add">+ Agregar</button></div><div class="table-wrap"><table>
-      <thead><tr><th>Nombre</th><th>Tipo</th><th>Abastecido por</th><th>Código tienda HioPos</th><th>Estado</th><th></th></tr></thead>
-      <tbody>${[...locs].sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === 'obrador' ? -1 : 1) || ((a.activo === false) - (b.activo === false)) || a.nombre.localeCompare(b.nombre)).map((l) => `<tr><td><b>${esc(l.nombre)}</b></td><td>${l.tipo === 'obrador' ? '<span class="badge b-blue">Obrador</span>' : '<span class="badge b-green">Local</span>'}</td><td>${l.tipo === 'local' ? esc(l.obrador_id ? locName(l.obrador_id) : 'Cualquier obrador') : '—'}</td><td>${esc(l.codigo_hiopos || '—')}</td><td>${l.activo === false ? 'Inactivo' : 'Activo'}</td><td class="num"><button class="btn sm" data-e="${l.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>`;
+      <thead><tr><th>Nombre</th><th>Tipo</th><th>Abastecido por</th><th>Avisos al despachar</th><th>Código tienda HioPos</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${[...locs].sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === 'obrador' ? -1 : 1) || ((a.activo === false) - (b.activo === false)) || a.nombre.localeCompare(b.nombre)).map((l) => `<tr><td><b>${esc(l.nombre)}</b></td><td>${l.tipo === 'obrador' ? '<span class="badge b-blue">Obrador</span>' : '<span class="badge b-green">Local</span>'}</td><td>${l.tipo === 'local' ? esc(l.obrador_id ? locName(l.obrador_id) : 'Cualquier obrador') : '—'}</td><td class="small">${l.tipo !== 'local' ? '—' : avisoTxt(avisos.find((a) => a.location_id === l.id))}</td><td>${esc(l.codigo_hiopos || '—')}</td><td>${l.activo === false ? 'Inactivo' : 'Activo'}</td><td class="num"><button class="btn sm" data-e="${l.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>
+      <p class="small muted" style="margin-top:10px">Al despachar un remito se manda un mail a los encargados del local, a administración y al mail de avisos del local, y un WhatsApp al número del local. Para activar el WhatsApp, desde ese celular mandá <b>I allow callmebot to send me messages</b> al contacto <b>+34 644 45 70 57</b> y cargá acá el código (apikey) que responde.</p>`;
     const edit = async (l = {}) => {
+      const av = avisos.find((a) => a.location_id === l.id) || {};
       const r = await modalForm({ title: l.id ? 'Editar sede' : 'Nueva sede', fields: [
         { name: 'nombre', label: 'Nombre', value: l.nombre, required: true },
         { name: 'tipo', label: 'Tipo', type: 'select', value: l.tipo || 'local', options: [{ value: 'obrador', label: 'Obrador' }, { value: 'local', label: 'Local' }] },
         { name: 'obrador_id', label: 'Abastecido por (solo locales)', type: 'select', value: l.obrador_id || '', options: [{ value: '', label: 'Cualquier obrador' }, ...obradores().map((o) => ({ value: o.id, label: o.nombre }))] },
         { name: 'codigo_hiopos', label: 'Código / nombre de tienda en HioPos', value: l.codigo_hiopos },
         { name: 'activo', label: 'Estado', type: 'select', value: String(l.activo !== false), options: yesno },
+        ...(l.tipo === 'obrador' ? [] : [
+          { name: 'av_email', label: 'Mail de avisos del local (opcional, varios separados por coma)', value: av.email || '' },
+          { name: 'av_whatsapp', label: 'WhatsApp de avisos (con código de país, ej. +5493415551234)', value: av.whatsapp || '' },
+          { name: 'av_apikey', label: 'Código CallMeBot (apikey) de ese WhatsApp', value: av.callmebot_apikey || '' },
+        ]),
       ] });
       if (!r) return;
-      try { await db.saveLocation({ ...(l.id ? { id: l.id } : {}), ...r, obrador_id: r.tipo === 'local' && r.obrador_id ? r.obrador_id : null, activo: r.activo === 'true' }); await loadMaestros(); toast('Guardado'); viewConfig(v); } catch (e) { err(e); }
+      const { av_email, av_whatsapp, av_apikey, ...loc } = r;
+      try {
+        await db.saveLocation({ ...(l.id ? { id: l.id } : {}), ...loc, obrador_id: loc.tipo === 'local' && loc.obrador_id ? loc.obrador_id : null, activo: loc.activo === 'true' });
+        if (l.id && l.tipo !== 'obrador') await db.saveAvisos({ location_id: l.id, email: (av_email || '').trim() || null, whatsapp: (av_whatsapp || '').replace(/[^\d+]/g, '') || null, callmebot_apikey: (av_apikey || '').trim() || null });
+        await loadMaestros(); toast('Guardado'); viewConfig(v);
+      } catch (e) { err(e); }
     };
     $('#add').onclick = () => edit();
     $$('[data-e]').forEach((b) => (b.onclick = () => edit(locs.find((l) => l.id === b.dataset.e))));
