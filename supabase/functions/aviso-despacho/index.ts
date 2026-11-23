@@ -49,11 +49,14 @@ Deno.serve(async (req) => {
   const label = `${r.area?.prefijo ?? "0000"}-${String(r.nro_area ?? r.numero).padStart(4, "0")}`;
   const areaNombre = r.area?.nombre ?? "";
 
-  const [{ data: locs }, { data: avisos }, { data: perfiles }] = await Promise.all([
+  const [{ data: locs }, { data: avisosTodos }, { data: perfiles }] = await Promise.all([
     sb.from("locations").select("id, nombre").in("id", [r.origen_id, r.destino_id]),
-    sb.from("location_avisos").select("*").eq("location_id", r.destino_id).maybeSingle(),
+    sb.from("location_avisos").select("*").in("location_id", [r.origen_id, r.destino_id]),
     sb.from("profiles").select("email, nombre, rol, location_id, id"),
   ]);
+  // Avisos del local destino (mail + WhatsApp) y del obrador origen (mail: copia de todo lo que sale de ese obrador)
+  const avisos = avisosTodos?.find((a) => a.location_id === r.destino_id);
+  const avisosObrador = avisosTodos?.find((a) => a.location_id === r.origen_id);
   const locName = (id: string) => locs?.find((l) => l.id === id)?.nombre ?? "";
   const origen = locName(r.origen_id);
   const destino = locName(r.destino_id);
@@ -84,7 +87,7 @@ Deno.serve(async (req) => {
     if (!p.email) continue;
     if (p.rol === "admin" || (p.rol === "local" && p.location_id === r.destino_id)) destinatarios.add(p.email.trim().toLowerCase());
   }
-  for (const m of String(avisos?.email ?? "").split(/[,;\s]+/)) if (m.includes("@")) destinatarios.add(m.trim().toLowerCase());
+  for (const m of `${avisos?.email ?? ""},${avisosObrador?.email ?? ""}`.split(/[,;\s]+/)) if (m.includes("@")) destinatarios.add(m.trim().toLowerCase());
 
   let mailEstado = "sin destinatarios";
   // La clave se toma del secreto de la función o, si no está, de Supabase Vault (función clave_resend)
