@@ -6,8 +6,8 @@ App web para seguir **online y en tiempo real** cada remito que sale de los obra
 
 | Quién | Qué hace en la app |
 |---|---|
-| **Obrador** (Güemes, Palermo) | Carga el remito por área (Laminados 0001, Pastelería 0002, Panadería 0003, General 0004, Cocina 0005), con bultos (tappers, latas, bowls), quién lo lleva, cortesías, especial del mes y renglones libres (lechuga, insumos, etc.). Lo despacha. |
-| **Local** (Guemes, Alto Rosario, Funes, Córdoba) | Ve al instante lo que viene en camino. Al llegar, cuenta y carga lo recibido. Las diferencias quedan marcadas en rojo con observación. |
+| **Obrador** (Güemes abastece Rosario, Palermo abastece DOT) | Carga el remito por área (Laminados 0001, Pastelería 0002, Panadería 0003, General 0004, Cocina 0005), con bultos (tappers, latas, bowls), quién lo lleva, cortesías, especial del mes y renglones libres (lechuga, insumos, etc.). Lo despacha. |
+| **Local** (Rosario: Guemes, Funes, Florida, Alto Rosario y Centro · Buenos Aires: DOT) | Ve al instante lo que viene en camino. Al llegar, cuenta y carga lo recibido. Las diferencias quedan marcadas en rojo con observación. |
 | **Administración** | Ve todo en vivo, importa las ventas de HioPos, ve el contraste enviado vs. vendido y administra productos, áreas, locales y usuarios. |
 
 Cada acción queda registrada con usuario, fecha y hora (trazabilidad completa).
