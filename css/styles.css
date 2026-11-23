@@ -217,3 +217,6 @@ tr.sec td { background: var(--surface-2); font-size: 11px; font-weight: 700; let
 .meta div b { font-weight: 600; }
 
 .nowrap { white-space: nowrap; }
+
+/* pasos del remito: se acomodan solos (4 o 5 pasos) */
+.steps { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
