@@ -16,6 +16,9 @@ const fmtFH = (iso) => (iso ? new Date(iso).toLocaleString('es-AR', { day: '2-di
 const fmtF = (iso) => (iso ? new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—');
 const dia = (d) => { d = new Date(d); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const hoy = () => dia(new Date());
+// Fecha completa y válida (un campo de fecha vacío o a medio escribir no se usa como filtro)
+const okFecha = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '') && !isNaN(new Date(v + 'T00:00:00'));
+const fechasOk = (f, desde, hasta) => { if (!okFecha(f.desde)) f.desde = desde; if (!okFecha(f.hasta)) f.hasta = hasta; return f; };
 const haceDias = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return dia(d); };
 const hace = (iso) => {
   if (!iso) return '';
@@ -437,7 +440,7 @@ async function viewTablero(v) {
 //  Listado de remitos
 // ======================================================================
 async function viewRemitos(v) {
-  const f = S.remFilters || (S.remFilters = { desde: haceDias(30), hasta: hoy(), estado: '', origen: '', destino: '', area: '', q: '' });
+  const f = fechasOk(S.remFilters || (S.remFilters = { desde: haceDias(30), hasta: hoy(), estado: '', origen: '', destino: '', area: '', q: '' }), haceDias(30), hoy());
   v.innerHTML = `
     <div class="page-head"><div><h1>Remitos</h1><p>Todo lo enviado de los obradores a los locales</p></div>
     <div class="btn-row">${can.crear() ? '<a class="btn primary" href="#/remitos/nuevo">+ Nuevo remito</a>' : ''}<button class="btn" id="csv">Exportar CSV</button></div></div>
@@ -466,7 +469,7 @@ async function viewRemitos(v) {
       </table>` : '<div class="empty">No hay remitos con estos filtros</div>';
     $$('#tbl tr[data-id]').forEach((tr) => (tr.onclick = () => (location.hash = '#/remitos/' + tr.dataset.id)));
   };
-  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
+  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { if (el.type === 'date' && !okFecha(el.value)) return; f[key] = el.value; draw(); }; };
   bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-estado', 'estado'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-q', 'q');
   $('#csv').onclick = () => downloadCSV('remitos.csv', [['N°', 'Área', 'Creado', 'Obrador', 'Local', 'Productos', 'Estado', 'Despachado', 'Recibido'],
     ...rows.map((r) => [label(r), area(r.area_id)?.nombre || '', fmtFH(r.creado_at), locName(r.origen_id), locName(r.destino_id), r.n_items, me.rol === 'admin' ? ESTADOS_ADMIN[estadoAdmin(r)].l + (r.estado === 'con_diferencias' ? (difPendiente(r) ? ' (diferencia sin resolver)' : ' (diferencia resuelta)') : '') : ESTADOS[r.estado]?.l, fmtFH(r.despachado_at), fmtFH(r.recibido_at)])]);
@@ -765,7 +768,7 @@ async function viewDetalle(v, id) {
 //  Diferencias: lo que Producción tiene que resolver
 // ======================================================================
 async function viewDiferencias(v) {
-  const f = S.difFilters || (S.difFilters = { desde: haceDias(30), hasta: hoy(), estado: 'pend', origen: '', destino: '', area: '', q: '' });
+  const f = fechasOk(S.difFilters || (S.difFilters = { desde: haceDias(30), hasta: hoy(), estado: 'pend', origen: '', destino: '', area: '', q: '' }), haceDias(30), hoy());
   v.innerHTML = `
     <div class="page-head"><div><h1>Diferencias</h1><p>Productos donde lo recibido no coincide con lo enviado. Se factura lo recibido; Producción indica el motivo y la cierra.</p></div>
     <div class="btn-row"><button class="btn" id="csv">Exportar CSV</button></div></div>
@@ -820,7 +823,7 @@ async function viewDiferencias(v) {
       try { await db.resolverDiferencia(b.dataset.res, res.tipo, res.obs || ''); toast('Diferencia resuelta'); draw(); } catch (e) { err(e); }
     }));
   };
-  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
+  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { if (el.type === 'date' && !okFecha(el.value)) return; f[key] = el.value; draw(); }; };
   bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-estado', 'estado'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-q', 'q');
   $('#csv').onclick = () => downloadCSV('diferencias.csv', [['Remito', 'Recibido', 'Obrador', 'Sucursal', 'Área', 'Producto', 'Unidad', 'Enviado', 'Recibido', 'Diferencia', 'Valor a costo', 'Obs. local', 'Estado', 'Motivo', 'Comentario Producción'],
     ...rows.map((i) => [label(i.remito), fmtFH(i.remito.recibido_at), locName(i.remito.origen_id), locName(i.remito.destino_id), area(i.remito.area_id)?.nombre || '', i.nombre, i.unidad, i.cantidad_enviada, i.cantidad_recibida, i.dif, Math.round(i.dif * i.costo), i.obs || '',
@@ -868,7 +871,7 @@ async function cargarRenglones(f) {
 }
 
 async function viewReportes(v) {
-  const f = S.repFilters || (S.repFilters = { desde: inicioMes(2), hasta: hoy(), origen: '', destino: '', area: '', tipo: '', orden: 'cant' });
+  const f = fechasOk(S.repFilters || (S.repFilters = { desde: inicioMes(2), hasta: hoy(), origen: '', destino: '', area: '', tipo: '', orden: 'cant' }), inicioMes(2), hoy());
   v.innerHTML = `
     <div class="page-head"><div><h1>Reportes</h1><p>Lo enviado a cada sucursal: ranking de productos, volumen por mes, diferencias y facturación</p></div>
     <div class="btn-row"><button class="btn primary" id="xlsx">Exportar a Excel</button></div></div>
@@ -952,7 +955,7 @@ async function viewReportes(v) {
     $$('#orden [data-o]').forEach((b) => (b.onclick = () => { f.orden = b.dataset.o; draw(); }));
     $$('#rep tr[data-id]').forEach((tr) => (tr.onclick = () => (location.hash = '#/remitos/' + tr.dataset.id)));
   };
-  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
+  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { if (el.type === 'date' && !okFecha(el.value)) return; f[key] = el.value; draw(); }; };
   bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-tipo', 'tipo');
   $('#xlsx').onclick = () => {
     if (!R?.rows.length) return toast('No hay datos para exportar', { err: true });
@@ -981,7 +984,7 @@ async function viewReportes(v) {
 // ======================================================================
 async function viewFranquicias(v) {
   const franqs = locales().filter((l) => l.es_franquicia);
-  const f = S.frFilters || (S.frFilters = { desde: inicioMes(0), hasta: hoy(), destino: '', tipo: 'franq', tab: 'resumen' });
+  const f = fechasOk(S.frFilters || (S.frFilters = { desde: inicioMes(0), hasta: hoy(), destino: '', tipo: 'franq', tab: 'resumen' }), inicioMes(0), hoy());
   v.innerHTML = `
     <div class="page-head"><div><h1>Franquicias</h1><p>Lo que recibió cada franquicia valorizado a precio de franquicia, contra el costo de producción</p></div>
     <div class="btn-row"><button class="btn primary" id="xlsx">Exportar a Excel</button></div></div>
@@ -996,7 +999,7 @@ async function viewFranquicias(v) {
         <label class="field"><span>Hasta</span><input type="date" id="f-hasta" value="${f.hasta}"></label>
         <label class="field"><span>Franquicia</span><select id="f-destino"><option value="">Todas</option>${franqs.map((l) => `<option value="${l.id}" ${f.destino === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>
       </div><div id="frr"><div class="empty">Cargando…</div></div>`;
-    const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; drawResumen(); }; };
+    const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { if (el.type === 'date' && !okFecha(el.value)) return; f[key] = el.value; drawResumen(); }; };
     bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-destino', 'destino');
     const rows = (await cargarRenglones({ ...f, tipo: 'franq' })).filter((i) => esFranq(i.destino_id));
     const porF = Object.entries(groupBy(rows, (i) => i.destino_id)).map(([id, l]) => {
@@ -1057,7 +1060,7 @@ async function viewFranquicias(v) {
 //  Contraste: enviado vs vendido
 // ======================================================================
 async function viewContraste(v) {
-  const f = S.conFilters || (S.conFilters = { desde: haceDias(7), hasta: haceDias(1), local: me.rol === 'local' ? me.location_id : '', area: '', seccion: 'terminado' });
+  const f = fechasOk(S.conFilters || (S.conFilters = { desde: haceDias(7), hasta: hoy(), local: me.rol === 'local' ? me.location_id : '', area: '', seccion: 'terminado' }), haceDias(7), hoy());
   v.innerHTML = `
     <div class="page-head"><div><h1>Enviado vs. vendido</h1><p>Compara lo que recibió cada local desde los obradores con lo que vendió en HioPos</p></div>
       <button class="btn" id="csv">Exportar CSV</button></div>
@@ -1067,7 +1070,7 @@ async function viewContraste(v) {
       ${me.rol === 'admin' ? `<label class="field"><span>Local</span><select id="c-local"><option value="">Todos los locales</option>${locales().map((l) => `<option value="${l.id}" ${f.local === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
       <label class="field"><span>Área</span><select id="c-area"><option value="">Todas</option>${areas.map((a) => `<option value="${a.id}" ${f.area === a.id ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('')}</select></label>
       <label class="field"><span>Sección</span><select id="c-sec"><option value="">Todas</option>${Object.entries(SECCIONES).map(([k, l]) => `<option value="${k}" ${f.seccion === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <div class="btn-row"><button class="btn sm" data-r="1">Ayer</button><button class="btn sm" data-r="7">7 días</button><button class="btn sm" data-r="30">30 días</button></div>
+      <div class="btn-row"><button class="btn sm" data-r="0">Hoy</button><button class="btn sm" data-r="1">Ayer</button><button class="btn sm" data-r="7">7 días</button><button class="btn sm" data-r="30">30 días</button></div>
     </div>
     <div id="c-out"></div>`;
   let rows = [];
@@ -1143,9 +1146,9 @@ async function viewContraste(v) {
       <p class="small muted" style="margin-top:10px"><b>Sin vender</b> = recibido − vendido. Si es positivo, quedó stock o hubo merma. Si es <span style="color:var(--blue)">negativo</span>, se vendió más de lo recibido en el período (stock anterior o error de carga). Se toman los remitos por fecha de despacho y las ventas por fecha de HioPos. Si un producto se vende fraccionado (ej. tarta entera → porciones), cargá el factor en Configuración → Productos.</p>`;
     $$('#c-out th[data-k]').forEach((t) => (t.onclick = () => { S.sort = { key: t.dataset.k, dir: S.sort.key === t.dataset.k ? -S.sort.dir : t.dataset.k === 'nombre' ? 1 : -1 }; draw(); }));
   };
-  const bind = (id, key) => { const el = $(id); if (el) el.onchange = () => { f[key] = el.value; draw(); }; };
+  const bind = (id, key) => { const el = $(id); if (el) el.onchange = () => { if (el.type === 'date' && !okFecha(el.value)) return; f[key] = el.value; draw(); }; };
   bind('#c-desde', 'desde'); bind('#c-hasta', 'hasta'); bind('#c-local', 'local'); bind('#c-area', 'area'); bind('#c-sec', 'seccion');
-  $$('[data-r]').forEach((b) => (b.onclick = () => { const n = Number(b.dataset.r); f.desde = haceDias(n); f.hasta = haceDias(1); $('#c-desde').value = f.desde; $('#c-hasta').value = f.hasta; draw(); }));
+  $$('[data-r]').forEach((b) => (b.onclick = () => { const n = Number(b.dataset.r); f.desde = haceDias(n); f.hasta = n === 1 ? haceDias(1) : hoy(); $('#c-desde').value = f.desde; $('#c-hasta').value = f.hasta; draw(); }));
   $('#csv').onclick = () => downloadCSV(`contraste_${f.desde}_${f.hasta}.csv`, [['Código', 'Producto', 'Unidad', 'Enviado', 'Faltante recepción', 'Recibido', 'En tránsito', 'Vendido', '% vendido', 'Sin vender', 'Sin vender $ costo', 'Venta $'],
     ...rows.map((x) => [x.p.codigo, x.p.nombre, x.p.unidad, x.enviado, x.faltante, x.recibido, x.transito, x.vendido, x.pct == null ? '' : Math.round(x.pct * 100), x.dif, Math.round(x.difVal), Math.round(x.importe)])]);
   await draw();
