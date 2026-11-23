@@ -10,7 +10,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtN = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: d });
 const fmtQ = (n) => (n == null ? '—' : fmtN(n, 3));
-const fmt$ = (n) => '$ ' + fmtN(Math.round(n || 0));
+const fmt$ = (n) => '$\u00a0' + fmtN(Math.round(n || 0));
 const fmtPct = (n) => (n == null || !isFinite(n) ? '—' : fmtN(n * 100, 0) + '%');
 const fmtFH = (iso) => (iso ? new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 const fmtF = (iso) => (iso ? new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—');
@@ -309,6 +309,8 @@ function navItems() {
   const items = [['tablero', '◉', 'Tablero en vivo'], ['remitos', '☰', 'Remitos']];
   if (can.crear()) items.push(['remitos/nuevo', '+', 'Nuevo remito']);
   if (me.rol !== 'local') items.push(['diferencias', '±', 'Diferencias']);
+  if (me.rol !== 'local') items.push(['reportes', '▤', 'Reportes']);
+  if (can.admin()) items.push(['franquicias', '◈', 'Franquicias']);
   if (me.rol !== 'obrador') items.push(['contraste', '⇄', 'Enviado vs. vendido']);
   if (can.admin()) items.push(['ventas', '↥', 'Ventas HioPos'], ['config', '⚙', 'Configuración']);
   return items;
@@ -349,6 +351,8 @@ async function route() {
     else if (path.startsWith('remitos/')) await viewDetalle(v, path.split('/')[1]);
     else if (path === 'contraste') await viewContraste(v);
     else if (path === 'diferencias') await viewDiferencias(v);
+    else if (path === 'reportes' && me.rol !== 'local') await viewReportes(v);
+    else if (path === 'franquicias' && can.admin()) await viewFranquicias(v);
     else if (path === 'ventas') await viewVentas(v);
     else if (path === 'config') await viewConfig(v);
     else v.innerHTML = '<div class="empty">Página no encontrada</div>';
@@ -823,6 +827,230 @@ async function viewDiferencias(v) {
       i.remito.dif_resuelta_at ? 'Resuelta' : 'Pendiente', DIF_TIPOS[i.remito.dif_tipo] || i.remito.dif_tipo || '', i.remito.dif_resolucion || ''])]);
   await draw();
   S.refresh = draw;
+}
+
+// ======================================================================
+//  Reportes (Etapa 2)
+// ======================================================================
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const mesDe = (iso) => dia(iso).slice(0, 7);
+const mesLabel = (m) => MESES[Number(m.slice(5, 7)) - 1] + ' ' + m.slice(0, 4);
+const inicioMes = (n) => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - n); return dia(d); };
+// Cantidad que cuenta: lo recibido si ya se controló, si no lo enviado
+const cantReal = (i) => Number(i.cantidad_recibida ?? i.cantidad_enviada) || 0;
+const esFranq = (locId) => !!locs.find((l) => l.id === locId)?.es_franquicia;
+const groupBy = (arr, key) => arr.reduce((m, x) => { const k = key(x); (m[k] ||= []).push(x); return m; }, {});
+const barra = (v, max, cls = '') => `<div class="bar ${cls}"><i style="width:${max ? Math.max(2, Math.round((v / max) * 100)) : 0}%"></i></div>`;
+
+function downloadXLSX(name, sheets) {
+  if (!window.XLSX) return toast('La librería de Excel no cargó todavía, probá de nuevo', { err: true });
+  const wb = XLSX.utils.book_new();
+  Object.entries(sheets).forEach(([n, rows]) => {
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = (rows[0] || []).map((_, c) => ({ wch: Math.min(40, Math.max(8, ...rows.slice(0, 200).map((r) => String(r[c] ?? '').length + 2))) }));
+    XLSX.utils.book_append_sheet(wb, ws, n.slice(0, 31));
+  });
+  XLSX.writeFile(wb, name);
+}
+
+// Lee los renglones despachados del período y les agrega producto, costo y precio de franquicia
+async function cargarRenglones(f) {
+  const its = await db.listItemsDespachados(f.desde, f.hasta);
+  return its.filter((i) => i.estado !== 'anulado'
+    && (!f.origen || i.origen_id === f.origen) && (!f.destino || i.destino_id === f.destino) && (!f.area || i.area_id === f.area)
+    && (!f.tipo || (f.tipo === 'franq') === esFranq(i.destino_id)))
+    .map((i) => {
+      const p = prod(i.product_id);
+      const env = Number(i.cantidad_enviada) || 0, real = cantReal(i);
+      return { ...i, nombre: itemNombre(i), unidad: itemUnidad(i), env, real, costo: p?.precio_costo || 0, pf: i.cortesia ? 0 : p?.precio_franquicia || 0,
+        dif: i.cantidad_recibida == null ? 0 : Number(i.cantidad_recibida) - env, mes: mesDe(i.remito?.despachado_at || i.created_at || new Date().toISOString()) };
+    });
+}
+
+async function viewReportes(v) {
+  const f = S.repFilters || (S.repFilters = { desde: inicioMes(2), hasta: hoy(), origen: '', destino: '', area: '', tipo: '', orden: 'cant' });
+  v.innerHTML = `
+    <div class="page-head"><div><h1>Reportes</h1><p>Lo enviado a cada sucursal: ranking de productos, volumen por mes, diferencias y facturación</p></div>
+    <div class="btn-row"><button class="btn primary" id="xlsx">Exportar a Excel</button></div></div>
+    <div class="filters card card-pad">
+      <label class="field"><span>Desde</span><input type="date" id="f-desde" value="${f.desde}"></label>
+      <label class="field"><span>Hasta</span><input type="date" id="f-hasta" value="${f.hasta}"></label>
+      ${me.rol === 'admin' ? `<label class="field"><span>Obrador</span><select id="f-origen"><option value="">Todos</option>${obradores().map((l) => `<option value="${l.id}" ${f.origen === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
+      <label class="field"><span>Sucursal / cliente</span><select id="f-destino"><option value="">Todas</option>${locales().map((l) => `<option value="${l.id}" ${f.destino === l.id ? 'selected' : ''}>${esc(l.nombre)}${l.es_franquicia ? ' (franquicia)' : ''}</option>`).join('')}</select></label>
+      <label class="field"><span>Tipo</span><select id="f-tipo"><option value="">Propios y franquicias</option><option value="prop" ${f.tipo === 'prop' ? 'selected' : ''}>Solo locales propios</option><option value="franq" ${f.tipo === 'franq' ? 'selected' : ''}>Solo franquicias</option></select></label>
+      <label class="field"><span>Área</span><select id="f-area"><option value="">Todas</option>${areas.map((a) => `<option value="${a.id}" ${f.area === a.id ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('')}</select></label>
+    </div>
+    <div id="rep"><div class="empty">Cargando…</div></div>`;
+  let R = null;
+  const draw = async () => {
+    const rows = await cargarRenglones(f);
+    const rems = Object.values(groupBy(rows, (i) => i.remito_id)).map((l) => ({ ...l[0].remito, lineas: l, costo: l.reduce((s, i) => s + i.real * i.costo, 0), pf: l.reduce((s, i) => s + i.real * i.pf, 0) }));
+    const totCosto = rows.reduce((s, i) => s + i.env * i.costo, 0);
+    const difVal = rows.reduce((s, i) => s + i.dif * i.costo, 0);
+    // Top productos
+    const porProd = Object.values(groupBy(rows.filter((i) => !i.cortesia), (i) => i.product_id || 'x:' + norm(i.nombre))).map((l) => ({
+      nombre: l[0].nombre, unidad: l[0].unidad, area: area(prod(l[0].product_id)?.area_id || l[0].area_id)?.nombre || '', env: l.reduce((s, i) => s + i.env, 0), real: l.reduce((s, i) => s + i.real, 0),
+      val: l.reduce((s, i) => s + i.env * i.costo, 0), suc: new Set(l.map((i) => i.destino_id)).size,
+    })).sort((a, b) => (f.orden === 'val' ? b.val - a.val : b.env - a.env));
+    // Por sucursal
+    const porSuc = Object.entries(groupBy(rows, (i) => i.destino_id)).map(([id, l]) => ({
+      id, nombre: locName(id), franq: esFranq(id), rem: new Set(l.map((i) => i.remito_id)).size, lin: l.length, env: l.reduce((s, i) => s + i.env, 0),
+      costo: l.reduce((s, i) => s + i.env * i.costo, 0), pf: l.reduce((s, i) => s + i.real * i.pf, 0), dif: l.reduce((s, i) => s + i.dif * i.costo, 0),
+    })).sort((a, b) => b.costo - a.costo);
+    // Por mes (y mes × sucursal)
+    const meses = [...new Set(rows.map((i) => i.mes))].sort();
+    const porMes = meses.map((m) => { const l = rows.filter((i) => i.mes === m); return { m, rem: new Set(l.map((i) => i.remito_id)).size, env: l.reduce((s, i) => s + i.env, 0), costo: l.reduce((s, i) => s + i.env * i.costo, 0), dif: l.reduce((s, i) => s + i.dif * i.costo, 0) }; });
+    const mesSuc = porSuc.map((s) => ({ ...s, m: meses.map((m) => rows.filter((i) => i.mes === m && i.destino_id === s.id).reduce((t, i) => t + i.env * i.costo, 0)) }));
+    // Por área
+    const porArea = Object.entries(groupBy(rows, (i) => i.area_id || '')).map(([id, l]) => ({ nombre: area(id)?.nombre || 'Sin área', rem: new Set(l.map((i) => i.remito_id)).size, costo: l.reduce((s, i) => s + i.env * i.costo, 0) })).sort((a, b) => b.costo - a.costo);
+    // Diferencias / mermas por motivo
+    const difs = rows.filter((i) => i.dif);
+    const porMot = Object.entries(groupBy(difs, (i) => (i.remito.dif_resuelta_at ? i.remito.dif_tipo : '_pend'))).map(([k, l]) => ({ k, nombre: k === '_pend' ? 'Sin resolver' : DIF_TIPOS[k] || k, rem: new Set(l.map((i) => i.remito_id)).size, lin: l.length, val: l.reduce((s, i) => s + i.dif * i.costo, 0) })).sort((a, b) => a.val - b.val);
+    // Facturación
+    const fact = rems.filter((r) => r.facturado_at).sort((a, b) => b.facturado_at.localeCompare(a.facturado_at));
+    const pendFact = rems.filter((r) => ['recibido', 'con_diferencias'].includes(r.estado) && !r.facturado_at);
+    R = { rows, porProd, porSuc, porMes, mesSuc, meses, porArea, porMot, difs, fact, pendFact };
+
+    const maxP = Math.max(0, ...porProd.slice(0, 10).map((p) => (f.orden === 'val' ? p.val : p.env)));
+    const maxS = Math.max(0, ...porSuc.map((s) => s.costo));
+    const maxM = Math.max(0, ...porMes.map((m) => m.costo));
+    const verFranq = me.rol === 'admin';
+    $('#rep').innerHTML = !rows.length ? '<div class="empty">No hay remitos despachados con estos filtros</div>' : `
+      <div class="kpis">
+        <div class="card kpi"><div class="label">Remitos</div><div class="value">${fmtN(rems.length)}</div><div class="sub">${fmtN(rows.length)} renglones</div></div>
+        <div class="card kpi"><div class="label">Enviado a costo</div><div class="value">${fmt$(totCosto)}</div><div class="sub">${porSuc.length} sucursales</div></div>
+        <div class="card kpi ${difVal < 0 ? 'alert' : ''}"><div class="label">Diferencias a costo</div><div class="value">${fmt$(difVal)}</div><div class="sub">${R.difs.length} renglones con diferencia</div></div>
+        ${verFranq ? `<div class="card kpi ${pendFact.length ? 'warn' : 'ok'}"><div class="label">Facturación</div><div class="value">${fact.length}</div><div class="sub">facturados · ${pendFact.length} pendientes</div></div>` : ''}
+      </div>
+      <div class="grid cols-2">
+        <section class="card"><div class="card-head"><h2>Top 10 productos</h2>
+          <div class="seg" id="orden"><button type="button" data-o="cant" class="${f.orden !== 'val' ? 'on' : ''}">Por cantidad</button><button type="button" data-o="val" class="${f.orden === 'val' ? 'on' : ''}">Por valor</button></div></div>
+          <div class="table-wrap"><table><thead><tr><th>#</th><th>Producto</th><th class="num">Enviado</th><th class="num">A costo</th><th></th></tr></thead><tbody>
+          ${porProd.slice(0, 10).map((p, i) => `<tr><td class="muted">${i + 1}</td><td><b>${esc(p.nombre)}</b> <span class="small muted">${esc(p.area)} · ${p.suc} suc.</span></td><td class="num nowrap">${fmtQ(p.env)} ${esc(p.unidad)}</td><td class="num">${fmt$(p.val)}</td><td style="width:90px">${barra(f.orden === 'val' ? p.val : p.env, maxP)}</td></tr>`).join('')}
+          </tbody></table></div></section>
+        <section class="card"><div class="card-head"><h2>Por sucursal / cliente</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Sucursal</th><th class="num">Remitos</th><th class="num">A costo</th>${verFranq ? '<th class="num">A precio franquicia</th>' : ''}<th class="num">Dif.</th><th></th></tr></thead><tbody>
+          ${porSuc.map((s) => `<tr><td><b>${esc(s.nombre)}</b>${s.franq ? ' <span class="badge b-amber">Franquicia</span>' : ''}</td><td class="num">${s.rem}</td><td class="num">${fmt$(s.costo)}</td>${verFranq ? `<td class="num">${s.franq ? fmt$(s.pf) : '<span class="muted">—</span>'}</td>` : ''}<td class="num" style="color:${s.dif < 0 ? 'var(--red)' : ''}">${s.dif ? fmt$(s.dif) : '✓'}</td><td style="width:80px">${barra(s.costo, maxS)}</td></tr>`).join('')}
+          </tbody></table></div></section>
+      </div>
+      <section class="card" style="margin-top:16px"><div class="card-head"><h2>Volumen mensual</h2><span class="small muted">enviado a costo</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Sucursal</th>${porMes.map((m) => `<th class="num">${mesLabel(m.m)}</th>`).join('')}<th class="num">Total</th></tr></thead><tbody>
+        ${mesSuc.map((s) => `<tr><td><b>${esc(s.nombre)}</b></td>${s.m.map((x) => `<td class="num">${x ? fmt$(x) : '<span class="muted">—</span>'}</td>`).join('')}<td class="num"><b>${fmt$(s.costo)}</b></td></tr>`).join('')}
+        </tbody><tfoot><tr><td>Total</td>${porMes.map((m) => `<td class="num">${fmt$(m.costo)}<div style="margin-top:4px">${barra(m.costo, maxM)}</div><div class="small muted">${m.rem} remitos</div></td>`).join('')}<td class="num">${fmt$(totCosto)}</td></tr></tfoot></table></div></section>
+      <div class="grid cols-2" style="margin-top:16px">
+        <section class="card"><div class="card-head"><h2>Diferencias y mermas por motivo</h2><a class="small" href="#/diferencias">Ver detalle</a></div>
+          <div class="table-wrap">${porMot.length ? `<table><thead><tr><th>Motivo</th><th class="num">Remitos</th><th class="num">Renglones</th><th class="num">A costo</th></tr></thead><tbody>
+          ${porMot.map((m) => `<tr><td>${m.k === '_pend' ? '<span class="badge b-red">Sin resolver</span>' : esc(m.nombre)}</td><td class="num">${m.rem}</td><td class="num">${m.lin}</td><td class="num">${fmt$(m.val)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty small">Sin diferencias en el período 👌</div>'}</div></section>
+        <section class="card"><div class="card-head"><h2>Por área</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Área</th><th class="num">Remitos</th><th class="num">A costo</th></tr></thead><tbody>
+          ${porArea.map((a) => `<tr><td>${esc(a.nombre)}</td><td class="num">${a.rem}</td><td class="num">${fmt$(a.costo)}</td></tr>`).join('')}</tbody></table></div></section>
+      </div>
+      ${verFranq ? `<section class="card" style="margin-top:16px"><div class="card-head"><h2>Historial de facturación</h2><span class="small muted">${fact.length} facturados · ${pendFact.length} pendientes</span></div>
+        <div class="table-wrap">${fact.length ? `<table><thead><tr><th>Remito</th><th>Sucursal</th><th>Facturado</th><th>N° factura</th><th class="num">Recibido a costo</th><th class="num">A precio franquicia</th></tr></thead><tbody>
+        ${fact.slice(0, 50).map((r) => `<tr class="click" data-id="${r.id}"><td class="nowrap"><b>${label(r)}</b></td><td>${esc(locName(r.destino_id))}</td><td class="small">${fmtFH(r.facturado_at)}</td><td>${esc(r.nro_factura || '—')}</td><td class="num">${fmt$(r.costo)}</td><td class="num">${esFranq(r.destino_id) ? fmt$(r.pf) : '<span class="muted">—</span>'}</td></tr>`).join('')}</tbody></table>
+        ${fact.length > 50 ? '<div class="small muted card-pad">Se muestran los últimos 50; el Excel tiene todos.</div>' : ''}` : '<div class="empty small">Sin remitos facturados en el período</div>'}</div></section>` : ''}`;
+    $$('#orden [data-o]').forEach((b) => (b.onclick = () => { f.orden = b.dataset.o; draw(); }));
+    $$('#rep tr[data-id]').forEach((tr) => (tr.onclick = () => (location.hash = '#/remitos/' + tr.dataset.id)));
+  };
+  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
+  bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-tipo', 'tipo');
+  $('#xlsx').onclick = () => {
+    if (!R?.rows.length) return toast('No hay datos para exportar', { err: true });
+    const admin = me.rol === 'admin';
+    downloadXLSX(`reporte_remitos_${f.desde}_${f.hasta}.xlsx`, {
+      'Ranking productos': [['#', 'Producto', 'Área', 'Unidad', 'Enviado', 'Recibido', 'Sucursales', 'Valor a costo'], ...R.porProd.map((p, i) => [i + 1, p.nombre, p.area, p.unidad, p.env, p.real, p.suc, Math.round(p.val)])],
+      'Por sucursal': [['Sucursal', 'Tipo', 'Remitos', 'Renglones', 'Unidades enviadas', 'Valor a costo', ...(admin ? ['Valor precio franquicia'] : []), 'Diferencias a costo'],
+        ...R.porSuc.map((s) => [s.nombre, s.franq ? 'Franquicia' : 'Propio', s.rem, s.lin, s.env, Math.round(s.costo), ...(admin ? [s.franq ? Math.round(s.pf) : ''] : []), Math.round(s.dif)])],
+      'Mensual': [['Sucursal', ...R.meses.map(mesLabel), 'Total'], ...R.mesSuc.map((s) => [s.nombre, ...s.m.map(Math.round), Math.round(s.costo)]),
+        ['Total', ...R.porMes.map((m) => Math.round(m.costo)), Math.round(R.porMes.reduce((t, m) => t + m.costo, 0))], ['Remitos', ...R.porMes.map((m) => m.rem)]],
+      'Por área': [['Área', 'Remitos', 'Valor a costo'], ...R.porArea.map((a) => [a.nombre, a.rem, Math.round(a.costo)])],
+      'Diferencias': [['Remito', 'Fecha envío', 'Sucursal', 'Área', 'Producto', 'Unidad', 'Enviado', 'Recibido', 'Diferencia', 'Valor a costo', 'Obs. local', 'Motivo'],
+        ...R.difs.map((i) => [label(i.remito), fmtF(i.remito.despachado_at), locName(i.destino_id), area(i.area_id)?.nombre || '', i.nombre, i.unidad, i.env, Number(i.cantidad_recibida), i.dif, Math.round(i.dif * i.costo), i.obs || '', i.remito.dif_resuelta_at ? DIF_TIPOS[i.remito.dif_tipo] || i.remito.dif_tipo : 'Sin resolver'])],
+      ...(admin ? { 'Facturación': [['Remito', 'Sucursal', 'Tipo', 'Estado', 'Facturado', 'N° factura', 'Recibido a costo', 'A precio franquicia'],
+        ...[...R.fact, ...R.pendFact].map((r) => [label(r), locName(r.destino_id), esFranq(r.destino_id) ? 'Franquicia' : 'Propio', r.facturado_at ? 'Facturado' : 'Pendiente', r.facturado_at ? fmtFH(r.facturado_at) : '', r.nro_factura || '', Math.round(r.costo), esFranq(r.destino_id) ? Math.round(r.pf) : ''])] } : {}),
+      'Detalle': [['Remito', 'Fecha envío', 'Obrador', 'Sucursal', 'Área', 'Producto', 'Unidad', 'Enviado', 'Recibido', 'Costo unit.', 'Cortesía', 'Estado'],
+        ...R.rows.map((i) => [label(i.remito), fmtF(i.remito.despachado_at), locName(i.origen_id), locName(i.destino_id), area(i.area_id)?.nombre || '', i.nombre, i.unidad, i.env, i.cantidad_recibida ?? '', i.costo, i.cortesia ? 'Sí' : '', ESTADOS[i.estado]?.l || i.estado])],
+    });
+  };
+  await draw();
+  S.refresh = draw;
+}
+
+// ======================================================================
+//  Franquicias: qué se les mandó, a qué precio y con qué margen
+// ======================================================================
+async function viewFranquicias(v) {
+  const franqs = locales().filter((l) => l.es_franquicia);
+  const f = S.frFilters || (S.frFilters = { desde: inicioMes(0), hasta: hoy(), destino: '', tipo: 'franq', tab: 'resumen' });
+  v.innerHTML = `
+    <div class="page-head"><div><h1>Franquicias</h1><p>Lo que recibió cada franquicia valorizado a precio de franquicia, contra el costo de producción</p></div>
+    <div class="btn-row"><button class="btn primary" id="xlsx">Exportar a Excel</button></div></div>
+    ${franqs.length ? '' : '<div class="callout"><span>Todavía no hay locales marcados como franquicia. Marcalos en Configuración → Obradores y locales → Editar → "Propio o franquicia".</span><a class="btn" href="#/config">Ir a Configuración</a></div>'}
+    <div class="tabs" id="tabs"><button data-t="resumen" class="${f.tab === 'resumen' ? 'active' : ''}">Resumen por franquicia</button><button data-t="precios" class="${f.tab === 'precios' ? 'active' : ''}">Lista de precios</button></div>
+    <div id="fr"></div>`;
+  let X = null;
+  const sinPrecio = () => prods.filter((p) => p.activo !== false && p.seccion === 'terminado' && !p.precio_franquicia);
+  const drawResumen = async () => {
+    $('#fr').innerHTML = `<div class="filters card card-pad">
+        <label class="field"><span>Desde</span><input type="date" id="f-desde" value="${f.desde}"></label>
+        <label class="field"><span>Hasta</span><input type="date" id="f-hasta" value="${f.hasta}"></label>
+        <label class="field"><span>Franquicia</span><select id="f-destino"><option value="">Todas</option>${franqs.map((l) => `<option value="${l.id}" ${f.destino === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>
+      </div><div id="frr"><div class="empty">Cargando…</div></div>`;
+    const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; drawResumen(); }; };
+    bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-destino', 'destino');
+    const rows = (await cargarRenglones({ ...f, tipo: 'franq' })).filter((i) => esFranq(i.destino_id));
+    const porF = Object.entries(groupBy(rows, (i) => i.destino_id)).map(([id, l]) => {
+      const venta = l.reduce((s, i) => s + i.real * i.pf, 0), costo = l.reduce((s, i) => s + i.real * i.costo, 0);
+      return { id, nombre: locName(id), rem: new Set(l.map((i) => i.remito_id)).size, venta, costo, margen: venta - costo, sinP: new Set(l.filter((i) => !i.pf && !i.cortesia && i.product_id).map((i) => i.product_id)).size };
+    }).sort((a, b) => b.venta - a.venta);
+    const porProd = Object.values(groupBy(rows.filter((i) => !i.cortesia), (i) => i.product_id || 'x:' + norm(i.nombre))).map((l) => ({
+      nombre: l[0].nombre, unidad: l[0].unidad, cant: l.reduce((s, i) => s + i.real, 0), pf: l[0].pf, costo: l[0].costo,
+      venta: l.reduce((s, i) => s + i.real * i.pf, 0), cst: l.reduce((s, i) => s + i.real * i.costo, 0),
+    })).sort((a, b) => b.venta - a.venta || b.cant - a.cant);
+    X = { rows, porF, porProd };
+    const tv = porF.reduce((s, x) => s + x.venta, 0), tc = porF.reduce((s, x) => s + x.costo, 0);
+    $('#frr').innerHTML = !rows.length ? '<div class="empty">No hay envíos a franquicias en el período</div>' : `
+      <div class="kpis">
+        <div class="card kpi"><div class="label">A precio franquicia</div><div class="value">${fmt$(tv)}</div><div class="sub">lo recibido en el período</div></div>
+        <div class="card kpi"><div class="label">Costo de producción</div><div class="value">${fmt$(tc)}</div><div class="sub">&nbsp;</div></div>
+        <div class="card kpi ${tv - tc < 0 ? 'alert' : 'ok'}"><div class="label">Margen</div><div class="value">${fmt$(tv - tc)}</div><div class="sub">${tv ? fmtPct((tv - tc) / tv) + ' sobre el precio' : '&nbsp;'}</div></div>
+      </div>
+      <section class="card"><div class="card-head"><h2>Por franquicia</h2></div><div class="table-wrap"><table>
+        <thead><tr><th>Franquicia</th><th class="num">Remitos</th><th class="num">A precio franquicia</th><th class="num">Costo</th><th class="num">Margen</th><th class="num">%</th></tr></thead>
+        <tbody>${porF.map((x) => `<tr><td><b>${esc(x.nombre)}</b>${x.sinP ? ` <span class="badge b-amber" title="Productos enviados sin precio de franquicia cargado">${x.sinP} productos sin precio</span>` : ''}</td><td class="num">${x.rem}</td><td class="num">${fmt$(x.venta)}</td><td class="num">${fmt$(x.costo)}</td><td class="num">${fmt$(x.margen)}</td><td class="num">${x.venta ? fmtPct(x.margen / x.venta) : '—'}</td></tr>`).join('')}</tbody></table></div></section>
+      <section class="card" style="margin-top:16px"><div class="card-head"><h2>Productos enviados a franquicias</h2></div><div class="table-wrap"><table>
+        <thead><tr><th>Producto</th><th class="num">Cantidad</th><th class="num">Precio franq.</th><th class="num">Costo unit.</th><th class="num">Total precio</th><th class="num">Margen</th></tr></thead>
+        <tbody>${porProd.map((p) => `<tr><td><b>${esc(p.nombre)}</b> <span class="small muted">${esc(p.unidad)}</span></td><td class="num">${fmtQ(p.cant)}</td><td class="num">${p.pf ? fmt$(p.pf) : '<span class="badge b-amber">falta</span>'}</td><td class="num">${fmt$(p.costo)}</td><td class="num">${fmt$(p.venta)}</td><td class="num">${fmt$(p.venta - p.cst)}</td></tr>`).join('')}</tbody></table></div></section>`;
+  };
+  const drawPrecios = () => {
+    const q = f.q || '';
+    const list = prods.filter((p) => p.activo !== false && (!q || norm(p.nombre).includes(norm(q)) || norm(p.codigo).includes(norm(q))))
+      .sort((a, b) => ((area(a.area_id)?.orden ?? 99) - (area(b.area_id)?.orden ?? 99)) || a.nombre.localeCompare(b.nombre));
+    const falt = sinPrecio().length;
+    $('#fr').innerHTML = `${falt ? `<div class="callout"><span>${falt} productos terminados no tienen precio de franquicia. Se cargan en Configuración → Productos → Editar → "Precio a franquicias".</span></div>` : ''}
+      <div class="card"><div class="card-head"><h2>Lista de precios a franquicias</h2><input id="pq" placeholder="Buscar…" value="${esc(q)}" style="width:180px"></div>
+      <div class="table-wrap"><table><thead><tr><th>Código</th><th>Producto</th><th>Unidad</th><th>Área</th><th class="num">Costo</th><th class="num">Precio franquicia</th><th class="num">Margen</th><th class="num">Precio venta local</th></tr></thead>
+      <tbody>${list.map((p) => `<tr><td>${esc(p.codigo || '')}</td><td><b>${esc(p.nombre)}</b></td><td>${esc(p.unidad)}</td><td>${esc(area(p.area_id)?.nombre || '—')}</td><td class="num">${fmt$(p.precio_costo)}</td>
+        <td class="num">${p.precio_franquicia ? fmt$(p.precio_franquicia) : p.seccion === 'terminado' ? '<span class="badge b-amber">falta</span>' : '<span class="muted">—</span>'}</td>
+        <td class="num">${p.precio_franquicia ? fmtPct((p.precio_franquicia - (p.precio_costo || 0)) / p.precio_franquicia) : '—'}</td><td class="num">${p.precio_venta ? fmt$(p.precio_venta) : '—'}</td></tr>`).join('')}</tbody></table></div></div>
+      <p class="small muted">Los costos se cargan a mano en Configuración → Productos. Cuando tengamos el acceso a Open Wings se podrán traer de ahí.</p>`;
+    $('#pq').oninput = (e) => { f.q = e.target.value; const pos = e.target.selectionStart; drawPrecios(); const el = $('#pq'); el.focus(); el.setSelectionRange(pos, pos); };
+  };
+  const draw = () => (f.tab === 'precios' ? drawPrecios() : drawResumen());
+  $$('#tabs [data-t]').forEach((b) => (b.onclick = () => { f.tab = b.dataset.t; $$('#tabs [data-t]').forEach((x) => x.classList.toggle('active', x === b)); draw(); }));
+  $('#xlsx').onclick = async () => {
+    if (!X) X = { rows: (await cargarRenglones({ ...f, tipo: 'franq' })).filter((i) => esFranq(i.destino_id)), porF: [], porProd: [] };
+    const lista = prods.filter((p) => p.activo !== false).sort((a, b) => ((area(a.area_id)?.orden ?? 99) - (area(b.area_id)?.orden ?? 99)) || a.nombre.localeCompare(b.nombre));
+    downloadXLSX(`franquicias_${f.desde}_${f.hasta}.xlsx`, {
+      'Lista de precios': [['Código', 'Producto', 'Unidad', 'Área', 'Costo', 'Precio franquicia', 'Margen %', 'Precio venta local'],
+        ...lista.map((p) => [p.codigo || '', p.nombre, p.unidad, area(p.area_id)?.nombre || '', p.precio_costo || 0, p.precio_franquicia || 0, p.precio_franquicia ? Math.round(((p.precio_franquicia - (p.precio_costo || 0)) / p.precio_franquicia) * 100) : '', p.precio_venta || 0])],
+      'Por franquicia': [['Franquicia', 'Remitos', 'A precio franquicia', 'Costo', 'Margen'], ...X.porF.map((x) => [x.nombre, x.rem, Math.round(x.venta), Math.round(x.costo), Math.round(x.margen)])],
+      'Detalle': [['Remito', 'Fecha envío', 'Franquicia', 'Producto', 'Unidad', 'Cantidad recibida', 'Precio franquicia', 'Total', 'Costo unit.', 'Facturado', 'N° factura'],
+        ...X.rows.map((i) => [label(i.remito), fmtF(i.remito.despachado_at), locName(i.destino_id), i.nombre, i.unidad, i.real, i.pf, Math.round(i.real * i.pf), i.costo, i.remito.facturado_at ? 'Sí' : 'No', i.remito.nro_factura || ''])],
+    });
+  };
+  draw();
+  S.refresh = () => f.tab === 'resumen' && drawResumen();
 }
 
 // ======================================================================

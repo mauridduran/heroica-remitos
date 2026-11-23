@@ -113,10 +113,10 @@ export async function createSupabaseDB(cfg) {
     // ---- contraste
     async listItemsDespachados(desde, hasta) {
       const rows = await all(() => sb.from('remito_items')
-        .select('*, remitos!inner(destino_id, area_id, estado, despachado_at)')
+        .select('*, remitos!inner(destino_id, origen_id, area_id, estado, despachado_at, nro_area, numero, facturado_at, nro_factura, dif_tipo, dif_resuelta_at)')
         .gte('remitos.despachado_at', ini(desde)).lte('remitos.despachado_at', fin(hasta))
         .neq('remitos.estado', 'anulado').order('id'));
-      return rows.map(({ remitos: r, ...i }) => ({ ...i, destino_id: r.destino_id, area_id: r.area_id, estado: r.estado }));
+      return rows.map(({ remitos: r, ...i }) => ({ ...i, destino_id: r.destino_id, origen_id: r.origen_id, area_id: r.area_id, estado: r.estado, remito: { id: i.remito_id, ...r } }));
     },
     async listVentas(desde, hasta) {
       return all(() => sb.from('ventas').select('*').gte('fecha', desde).lte('fecha', hasta).order('id'));

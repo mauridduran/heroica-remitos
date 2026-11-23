@@ -295,7 +295,7 @@ export function createDemoDB() {
       const rs = data.remitos.filter((r) => canSee(r) && r.despachado_at && r.estado !== 'anulado'
         && dia(r.despachado_at) >= desde && dia(r.despachado_at) <= hasta);
       const byId = new Map(rs.map((r) => [r.id, r]));
-      return clone(data.items.filter((i) => byId.has(i.remito_id)).map((i) => ({ ...i, destino_id: byId.get(i.remito_id).destino_id, area_id: byId.get(i.remito_id).area_id, estado: byId.get(i.remito_id).estado })));
+      return clone(data.items.filter((i) => byId.has(i.remito_id)).map((i) => { const r = byId.get(i.remito_id); return { ...i, destino_id: r.destino_id, origen_id: r.origen_id, area_id: r.area_id, estado: r.estado, remito: r }; }));
     },
     async listVentas(desde, hasta) {
       return clone(data.ventas.filter((v) => v.fecha >= desde && v.fecha <= hasta && (me.rol === 'admin' || v.location_id === me.location_id)));
