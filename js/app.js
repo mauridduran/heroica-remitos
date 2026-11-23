@@ -195,9 +195,12 @@ async function renderLogin() {
       const btn = $('button', e.target); btn.disabled = true;
       const email = new FormData(e.target).get('email');
       try {
+        $('#sent').innerHTML = '';
         await db.resetPassword(email);
-        $('#sent').innerHTML = `<div class="callout info" style="margin:14px 0 0"><span>Listo. Si ${esc(email)} tiene usuario, en unos minutos le llega un mail con el link. Revisá también la carpeta de spam.</span></div>`;
-      } catch (ex) { err(ex); btn.disabled = false; }
+        $('#sent').innerHTML = `<div class="callout info" style="margin:14px 0 0"><span>Listo. Si ${esc(email)} tiene usuario, en unos minutos le llega un mail de Supabase ("Reset Your Password") con el link. Revisá también la carpeta de spam.</span></div>`;
+      } catch (ex) {
+        err(/rate limit|security purposes/i.test(ex.message) ? new Error('Se pidieron demasiados mails seguidos. Esperá unos minutos y volvé a intentar.') : ex);
+      } finally { setTimeout(() => (btn.disabled = false), 5000); }
     };
   };
   const draw = () => {
