@@ -3,7 +3,7 @@
 
 import { AREAS, PRODUCTOS } from './catalogo.js';
 
-const KEY = 'remitos_demo_v3';
+const KEY = 'remitos_demo_v4';
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 const clone = (o) => JSON.parse(JSON.stringify(o));
 // Día local (YYYY-MM-DD) de una fecha ISO
@@ -23,7 +23,7 @@ function seed() {
   const obG = L('Obrador Guemes (Rosario)', 'obrador');
   const obP = L('Obrador Palermo (Buenos Aires)', 'obrador');
   const LR = (nombre, ob) => ({ ...L(nombre, 'local'), obrador_id: ob.id });
-  const locs = [obG, obP, LR('Funes', obG), LR('Florida', obG), LR('Alto Rosario', obG), LR('Centro', obG), LR('DOT', obP)];
+  const locs = [obG, obP, LR('Guemes', obG), LR('Funes', obG), LR('Florida', obG), LR('Alto Rosario', obG), LR('Centro', obG), LR('DOT', obP)];
   const locales = locs.filter((l) => l.tipo === 'local');
   const localesG = locales.filter((l) => l.obrador_id === obG.id);
 
