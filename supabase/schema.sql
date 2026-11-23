@@ -412,6 +412,7 @@ end $$;
 insert into locations (nombre, tipo) values
   ('Obrador Guemes (Rosario)', 'obrador'),
   ('Obrador Palermo (Buenos Aires)', 'obrador'),
+  ('Guemes', 'local'),
   ('Funes', 'local'),
   ('Florida', 'local'),
   ('Alto Rosario', 'local'),
@@ -420,6 +421,6 @@ insert into locations (nombre, tipo) values
 on conflict (nombre) do nothing;
 
 update locations set obrador_id = (select id from locations where nombre = 'Obrador Guemes (Rosario)')
-where nombre in ('Funes', 'Florida', 'Alto Rosario', 'Centro');
+where nombre in ('Guemes', 'Funes', 'Florida', 'Alto Rosario', 'Centro');
 update locations set obrador_id = (select id from locations where nombre = 'Obrador Palermo (Buenos Aires)')
 where nombre = 'DOT';
