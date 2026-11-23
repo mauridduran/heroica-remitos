@@ -42,7 +42,17 @@ Abrir http://localhost:8765 y elegir un usuario. Para ver el tiempo real, abrir 
 5. **Usuarios**: la **primera persona que se registra queda como administrador**. El resto se registra desde la pantalla de ingreso y el admin le asigna el rol (obrador o local) y su sede en *Configuración → Usuarios*.
    - Opcional: en Supabase → *Authentication → Providers → Email*, desactivar "Confirm email" para no tener que confirmar por mail.
 
-## Ventas de HioPos
+## Avisos al despachar (mail + WhatsApp)
+
+Cuando un obrador despacha un remito, la base dispara la Edge Function `aviso-despacho` (`supabase/functions/aviso-despacho/index.ts`), que:
+
+- manda un **mail con el resumen** (desde remitos@mheroica.com, vía Resend) a los encargados del local destino, a administración y al mail de avisos del local;
+- manda un **WhatsApp** al número de avisos del local (vía CallMeBot);
+- deja **"Aviso enviado"** en el historial del remito, con el resultado.
+
+Los mails y WhatsApp de cada local se cargan en *Configuración → Obradores y locales → Editar*. Para activar un WhatsApp, desde ese celular se manda *I allow callmebot to send me messages* al contacto +34 644 45 70 57 y se carga el código (apikey) que responde. La clave de Resend está guardada cifrada en Supabase Vault (`resend_api_key`).
+
+
 
 En *Ventas HioPos* (solo admin) se sube el informe de **ventas por artículo** exportado desde HioPos (Excel o CSV). La app:
 - detecta las columnas (fecha, código, artículo, unidades, importe);
