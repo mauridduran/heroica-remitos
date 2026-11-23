@@ -3,8 +3,8 @@
 // Manda un mail con el resumen (Resend) y un WhatsApp al local destino (CallMeBot),
 // y deja registrado en el historial del remito a quién se avisó.
 //
-// Secretos necesarios (Supabase → Edge Functions → Secrets):
-//   RESEND_API_KEY   clave de Resend con permiso de envío para mheroica.com
+// Clave de Resend (permiso de envío para mheroica.com): secreto RESEND_API_KEY de la función
+// o, si no está, guardada cifrada en Supabase Vault con el nombre "resend_api_key".
 // SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY los provee Supabase automáticamente.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -87,7 +87,10 @@ Deno.serve(async (req) => {
   for (const m of String(avisos?.email ?? "").split(/[,;\s]+/)) if (m.includes("@")) destinatarios.add(m.trim().toLowerCase());
 
   let mailEstado = "sin destinatarios";
-  if (destinatarios.size) {
+  // La clave se toma del secreto de la función o, si no está, de Supabase Vault (función clave_resend)
+  const resendKey = Deno.env.get("RESEND_API_KEY") || (await sb.rpc("clave_resend")).data;
+  if (destinatarios.size && !resendKey) mailEstado = "mail sin clave de Resend";
+  else if (destinatarios.size) {
     const filas = items.map((i: any) =>
       `<tr><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb">${esc(i.nombre)}${i.extra ? ` <span style="color:#1d5fbf;font-size:12px">(${esc(i.extra)})</span>` : ""}</td>` +
       `<td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;color:#666">${esc(i.unidad)}</td>` +
@@ -117,7 +120,7 @@ Deno.serve(async (req) => {
 </div></body></html>`;
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
-      headers: { Authorization: `Bearer ${Deno.env.get("RESEND_API_KEY")}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from: FROM,
         to: [...destinatarios],
