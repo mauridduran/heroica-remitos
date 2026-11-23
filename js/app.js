@@ -96,6 +96,8 @@ const itemNombre = (i) => (i.product_id ? prod(i.product_id)?.nombre || '(produc
 const itemUnidad = (i) => (i.product_id ? prod(i.product_id)?.unidad : i.unidad) || '';
 const obradores = () => locs.filter((l) => l.tipo === 'obrador' && l.activo !== false);
 const locales = () => locs.filter((l) => l.tipo === 'local' && l.activo !== false);
+// Locales que abastece un obrador (los que no tienen obrador asignado aparecen para todos)
+const localesDe = (obradorId) => locales().filter((l) => !l.obrador_id || l.obrador_id === obradorId);
 const can = {
   crear: () => ['admin', 'obrador'].includes(me.rol),
   admin: () => me.rol === 'admin',
@@ -425,7 +427,7 @@ async function viewNuevo(v) {
         <div class="field"><span>Área</span><div class="seg" id="areas">${activeAreas.map((a) => `<button type="button" data-a="${a.id}">${esc(a.nombre)} <span class="small">${esc(a.prefijo)}</span></button>`).join('')}</div></div>
         <div class="form-grid">
           <label class="field"><span>Obrador (origen)</span>${me.rol === 'obrador' ? `<input value="${esc(locName(me.location_id))}" disabled>` : `<select id="origen">${obradores().map((l) => `<option value="${l.id}">${esc(l.nombre)}</option>`).join('')}</select>`}</label>
-          <label class="field"><span>Destino (local)</span><select id="destino" required><option value="">Elegí un local…</option>${locales().map((l) => `<option value="${l.id}">${esc(l.nombre)}</option>`).join('')}</select></label>
+          <label class="field"><span>Destino (local)</span><select id="destino" required></select></label>
           <label class="field"><span>Entregado por</span><input id="entregado" placeholder="Quién lleva la mercadería"></label>
           <label class="field"><span>N° remito en papel (opcional)</span><input id="papel" placeholder="Ej: 0003-0941"></label>
         </div>
@@ -450,6 +452,12 @@ async function viewNuevo(v) {
       </div>
     </div>`;
 
+  const drawDestinos = () => {
+    const opts = localesDe(st.origen);
+    if (!opts.some((l) => l.id === st.destino)) st.destino = '';
+    $('#destino').innerHTML = `<option value="">${opts.length ? 'Elegí un local…' : 'Este obrador no tiene locales asignados'}</option>` +
+      opts.map((l) => `<option value="${l.id}" ${l.id === st.destino ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('');
+  };
   const drawAreas = () => $$('#areas button').forEach((b) => b.classList.toggle('on', b.dataset.a === st.area));
   const drawList = () => {
     const q = norm(st.q);
@@ -489,7 +497,7 @@ async function viewNuevo(v) {
     $('#resumen').innerHTML = its.length ? `<b>${its.length}</b> renglones · valorizado a costo <b>${fmt$(val)}</b>` : 'Sin productos cargados';
   };
   $$('#areas button').forEach((b) => (b.onclick = () => { st.area = b.dataset.a; drawAreas(); drawList(); }));
-  if ($('#origen')) $('#origen').onchange = (e) => { st.origen = e.target.value; drawList(); };
+  if ($('#origen')) $('#origen').onchange = (e) => { st.origen = e.target.value; drawDestinos(); drawList(); };
   $('#destino').onchange = (e) => (st.destino = e.target.value);
   $('#q').oninput = (e) => { st.q = e.target.value; drawList(); };
   $('#todas').onchange = (e) => { st.todas = e.target.checked; drawList(); };
@@ -510,7 +518,7 @@ async function viewNuevo(v) {
   };
   $('#borrador').onclick = (e) => guardar(false, e.currentTarget);
   $('#despachar').onclick = (e) => guardar(true, e.currentTarget);
-  drawAreas(); drawList(); drawExtras();
+  drawAreas(); drawDestinos(); drawList(); drawExtras();
 }
 
 // ======================================================================
@@ -915,17 +923,18 @@ async function viewConfig(v) {
 
   if (tab === 'locs') {
     out.innerHTML = `<div class="card"><div class="card-head"><h2>Obradores y locales</h2><button class="btn primary sm" id="add">+ Agregar</button></div><div class="table-wrap"><table>
-      <thead><tr><th>Nombre</th><th>Tipo</th><th>Código tienda HioPos</th><th>Estado</th><th></th></tr></thead>
-      <tbody>${locs.map((l) => `<tr><td><b>${esc(l.nombre)}</b></td><td>${l.tipo === 'obrador' ? '<span class="badge b-blue">Obrador</span>' : '<span class="badge b-green">Local</span>'}</td><td>${esc(l.codigo_hiopos || '—')}</td><td>${l.activo === false ? 'Inactivo' : 'Activo'}</td><td class="num"><button class="btn sm" data-e="${l.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>`;
+      <thead><tr><th>Nombre</th><th>Tipo</th><th>Abastecido por</th><th>Código tienda HioPos</th><th>Estado</th><th></th></tr></thead>
+      <tbody>${[...locs].sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === 'obrador' ? -1 : 1) || ((a.activo === false) - (b.activo === false)) || a.nombre.localeCompare(b.nombre)).map((l) => `<tr><td><b>${esc(l.nombre)}</b></td><td>${l.tipo === 'obrador' ? '<span class="badge b-blue">Obrador</span>' : '<span class="badge b-green">Local</span>'}</td><td>${l.tipo === 'local' ? esc(l.obrador_id ? locName(l.obrador_id) : 'Cualquier obrador') : '—'}</td><td>${esc(l.codigo_hiopos || '—')}</td><td>${l.activo === false ? 'Inactivo' : 'Activo'}</td><td class="num"><button class="btn sm" data-e="${l.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>`;
     const edit = async (l = {}) => {
       const r = await modalForm({ title: l.id ? 'Editar sede' : 'Nueva sede', fields: [
         { name: 'nombre', label: 'Nombre', value: l.nombre, required: true },
         { name: 'tipo', label: 'Tipo', type: 'select', value: l.tipo || 'local', options: [{ value: 'obrador', label: 'Obrador' }, { value: 'local', label: 'Local' }] },
+        { name: 'obrador_id', label: 'Abastecido por (solo locales)', type: 'select', value: l.obrador_id || '', options: [{ value: '', label: 'Cualquier obrador' }, ...obradores().map((o) => ({ value: o.id, label: o.nombre }))] },
         { name: 'codigo_hiopos', label: 'Código / nombre de tienda en HioPos', value: l.codigo_hiopos },
         { name: 'activo', label: 'Estado', type: 'select', value: String(l.activo !== false), options: yesno },
       ] });
       if (!r) return;
-      try { await db.saveLocation({ ...(l.id ? { id: l.id } : {}), ...r, activo: r.activo === 'true' }); await loadMaestros(); toast('Guardado'); viewConfig(v); } catch (e) { err(e); }
+      try { await db.saveLocation({ ...(l.id ? { id: l.id } : {}), ...r, obrador_id: r.tipo === 'local' && r.obrador_id ? r.obrador_id : null, activo: r.activo === 'true' }); await loadMaestros(); toast('Guardado'); viewConfig(v); } catch (e) { err(e); }
     };
     $('#add').onclick = () => edit();
     $$('[data-e]').forEach((b) => (b.onclick = () => edit(locs.find((l) => l.id === b.dataset.e))));

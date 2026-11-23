@@ -3,7 +3,7 @@
 
 import { AREAS, PRODUCTOS } from './catalogo.js';
 
-const KEY = 'remitos_demo_v2';
+const KEY = 'remitos_demo_v3';
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 const clone = (o) => JSON.parse(JSON.stringify(o));
 // Día local (YYYY-MM-DD) de una fecha ISO
@@ -22,8 +22,10 @@ function seed() {
   const L = (nombre, tipo) => ({ id: uid(), nombre, tipo, codigo_hiopos: '', activo: true });
   const obG = L('Obrador Guemes (Rosario)', 'obrador');
   const obP = L('Obrador Palermo (Buenos Aires)', 'obrador');
-  const locs = [obG, obP, L('Guemes', 'local'), L('Alto Rosario', 'local'), L('Funes', 'local'), L('Córdoba', 'local')];
+  const LR = (nombre, ob) => ({ ...L(nombre, 'local'), obrador_id: ob.id });
+  const locs = [obG, obP, LR('Funes', obG), LR('Florida', obG), LR('Alto Rosario', obG), LR('Centro', obG), LR('DOT', obP)];
   const locales = locs.filter((l) => l.tipo === 'local');
+  const localesG = locales.filter((l) => l.obrador_id === obG.id);
 
   const areas = AREAS.map((a, i) => ({ id: uid(), codigo: a.codigo, nombre: a.nombre, prefijo: a.prefijo, orden: i, activo: true }));
   const areaBy = Object.fromEntries(areas.map((a) => [a.codigo, a]));
@@ -62,8 +64,7 @@ function seed() {
     for (const [ai, ac] of ['LAM', 'PAS', 'PAN', 'COC'].entries()) {
       const area = areaBy[ac];
       const delArea = products.filter((p) => p.area_id === area.id);
-      for (const [li, loc] of locales.entries()) {
-        if (loc.nombre === 'Córdoba' && (d % 2)) continue;   // Córdoba recibe día por medio
+      for (const [li, loc] of localesG.entries()) {
         const pick = delArea.filter((p) => (p.seccion === 'terminado' ? r() < 0.55 : r() < 0.12));
         if (!pick.length) continue;
         const h = 6 + ai, m = li * 6;
@@ -83,7 +84,7 @@ function seed() {
         rem.estado = 'en_transito'; rem.despachado_por = 'u-obg'; rem.despachado_at = day(d, h, m + 20);
         ev(rem, 'despachado', null, 'u-obg', rem.despachado_at);
         if (d > 0 || li === 0) {
-          const locUser = 'u-loc' + li;
+          const locUser = 'u-loc' + locales.indexOf(loc);
           let dif = 0;
           for (const it of its) {
             it.cantidad_recibida = it.cantidad_enviada;
