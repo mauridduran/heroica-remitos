@@ -98,6 +98,16 @@ export async function createSupabaseDB(cfg) {
     async marcarLlegado(id) { ok(await sb.rpc('marcar_llegado', { p_id: id })); },
     async marcarFacturado(id, nro) { ok(await sb.rpc('marcar_facturado', { p_id: id, p_nro: nro || '' })); },
     async anularRemito(id, motivo) { ok(await sb.rpc('anular_remito', { p_id: id, p_motivo: motivo })); },
+    async resolverDiferencia(id, tipo, obs) { ok(await sb.rpc('resolver_diferencia', { p_id: id, p_tipo: tipo, p_obs: obs || '' })); },
+    // Renglones con diferencia (enviado ≠ recibido) de remitos recibidos en el período
+    async listDiferencias(desde, hasta) {
+      const rows = await all(() => sb.from('remito_items')
+        .select('*, remitos!inner(id, numero, nro_area, area_id, origen_id, destino_id, estado, recibido_at, dif_resuelta_at, dif_tipo, dif_resolucion, facturado_at)')
+        .eq('remitos.estado', 'con_diferencias')
+        .gte('remitos.recibido_at', ini(desde)).lte('remitos.recibido_at', fin(hasta)).order('id'));
+      return rows.filter((i) => i.cantidad_recibida != null && Number(i.cantidad_recibida) !== Number(i.cantidad_enviada))
+        .map(({ remitos: r, ...i }) => ({ ...i, remito: r }));
+    },
     async listEventos(limit = 30) { return ok(await sb.from('remito_eventos').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit)); },
 
     // ---- contraste

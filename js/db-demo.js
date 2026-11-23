@@ -3,7 +3,7 @@
 
 import { AREAS, PRODUCTOS } from './catalogo.js';
 
-const KEY = 'remitos_demo_v5';
+const KEY = 'remitos_demo_v6';
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now());
 const clone = (o) => JSON.parse(JSON.stringify(o));
 // Día local (YYYY-MM-DD) de una fecha ISO
@@ -23,7 +23,7 @@ function seed() {
   const obG = L('Obrador Guemes (Rosario)', 'obrador');
   const obP = L('Obrador Palermo (Buenos Aires)', 'obrador');
   const LR = (nombre, ob) => ({ ...L(nombre, 'local'), obrador_id: ob.id });
-  const locs = [obG, obP, LR('Guemes', obG), LR('Funes', obG), LR('Florida', obG), LR('Alto Rosario', obG), LR('Centro', obG), LR('DOT', obP)];
+  const locs = [obG, obP, LR('Guemes', obG), { ...LR('Funes', obG), es_franquicia: true }, LR('Florida', obG), LR('Alto Rosario', obG), LR('Centro', obG), LR('DOT', obP)];
   const locales = locs.filter((l) => l.tipo === 'local');
   const localesG = locales.filter((l) => l.obrador_id === obG.id);
 
@@ -34,7 +34,7 @@ function seed() {
     const costo = Math.round((terminado ? 600 + r() * 2400 : 1500 + r() * 6000) / 50) * 50;
     return { id: uid(), codigo: p.codigo, nombre: p.nombre, unidad: p.unidad, seccion: p.seccion, categoria: areaBy[p.area].nombre,
       area_id: areaBy[p.area].id, obrador_id: null, factor_hiopos: 1, codigo_hiopos: terminado ? p.codigo : '',
-      precio_costo: costo, precio_venta: terminado ? Math.round((costo * 3) / 100) * 100 : 0, activo: true };
+      precio_costo: costo, precio_venta: terminado ? Math.round((costo * 3) / 100) * 100 : 0, precio_franquicia: terminado ? Math.round((costo * 1.8) / 50) * 50 : 0, activo: true };
   });
 
   const profiles = [
@@ -95,6 +95,7 @@ function seed() {
           rem.recibido_por = locUser; rem.recibido_at = day(d, h + 2, m + 10);
           rem.llegado_por = locUser; rem.llegado_at = day(d, h + 1, m + 50);
           if (d >= 3) { rem.facturado_por = 'u-admin'; rem.facturado_at = day(d - 1, 11, m); }
+          if (dif && d >= 5) Object.assign(rem, { dif_resuelta_at: day(d - 1, 10, m), dif_resuelta_por: 'u-obg', dif_tipo: r() < 0.5 ? 'merma' : 'faltante_traslado', dif_resolucion: '' });
           ev(rem, rem.estado, dif ? dif + ' productos con diferencia' : 'Todo OK', locUser, rem.recibido_at);
           // ventas HioPos: se vende entre 70% y 100% de lo recibido, repartido en el día y el siguiente
           if (d > 0) for (const it of its) {
@@ -208,8 +209,11 @@ export function createDemoDB() {
       const its = items.filter((i) => Number(i.cantidad) > 0 && (i.product_id || (i.descripcion || '').trim()));
       if (!its.length) fail('El remito no tiene productos');
       const now = new Date().toISOString();
-      const nro_area = 1 + Math.max(0, ...data.remitos.filter((r) => r.origen_id === origen_id && (r.area_id || null) === (area_id || null)).map((r) => r.nro_area || 0));
-      const rem = { id: uid(), numero: data.nextNumero++, origen_id, destino_id, area_id: area_id || null, nro_area, nro_papel: nro_papel || '', entregado_por: entregado_por || '', bultos: bultos || {}, bultos_recibidos: null, estado: 'borrador', observaciones: observaciones || '', obs_recepcion: '', anulado_motivo: '', creado_por: me.id, creado_at: now, despachado_por: null, despachado_at: null, recibido_por: null, recibido_at: null };
+      const nro_area = parseInt(String(arguments[0].nro_area ?? '').replace(/\D/g, ''), 10);
+      if (!(nro_area > 0)) fail('Cargá el N° del remito de papel (talonario)');
+      const pref = data.areas.find((a) => a.id === area_id)?.prefijo || '0000';
+      if (data.remitos.some((r) => r.origen_id === origen_id && (r.area_id || null) === (area_id || null) && r.nro_area === nro_area && r.estado !== 'anulado')) fail(`El remito ${pref}-${String(nro_area).padStart(4, '0')} ya está cargado`);
+      const rem = { id: uid(), numero: data.nextNumero++, origen_id, destino_id, area_id: area_id || null, nro_area, nro_papel: pref + '-' + String(nro_area).padStart(4, '0'), entregado_por: entregado_por || '', bultos: bultos || {}, bultos_recibidos: null, estado: 'borrador', observaciones: observaciones || '', obs_recepcion: '', anulado_motivo: '', creado_por: me.id, creado_at: now, despachado_por: null, despachado_at: null, recibido_por: null, recibido_at: null };
       data.remitos.push(rem);
       its.forEach((i) => data.items.push({ id: uid(), remito_id: rem.id, product_id: i.product_id || null, descripcion: i.descripcion || null, unidad: i.unidad || null, cortesia: !!i.cortesia, especial: !!i.especial, cantidad_enviada: Number(i.cantidad), cantidad_recibida: null, obs: '' }));
       let evt = event(rem, 'creado', its.length + ' productos');
@@ -262,9 +266,24 @@ export function createDemoDB() {
     async anularRemito(id, motivo) {
       const r = data.remitos.find((x) => x.id === id);
       if (!(me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id && ['borrador', 'en_transito'].includes(r.estado)))) fail('No tenés permiso para anular este remito');
+      if (['recibido', 'con_diferencias'].includes(r.estado)) fail('No se puede anular un remito que ya fue recibido por el local');
       if (r.estado === 'anulado') fail('Ya está anulado');
       r.estado = 'anulado'; r.anulado_motivo = motivo;
       save(event(r, 'anulado', motivo));
+    },
+    async resolverDiferencia(id, tipo, obs) {
+      const r = data.remitos.find((x) => x.id === id);
+      if (!(me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id))) fail('Solo Producción del obrador que lo envió o administración pueden resolver la diferencia');
+      if (r.estado !== 'con_diferencias') fail('El remito no tiene diferencias');
+      if (r.dif_resuelta_at) fail('La diferencia ya fue resuelta');
+      if (!tipo) fail('Elegí el motivo de la diferencia');
+      Object.assign(r, { dif_resuelta_at: new Date().toISOString(), dif_resuelta_por: me.id, dif_tipo: tipo, dif_resolucion: obs || '' });
+      const t = tipo.replace(/_/g, ' ');
+      save(event(r, 'dif_resuelta', t.charAt(0).toUpperCase() + t.slice(1) + (obs ? ' · ' + obs : '')));
+    },
+    async listDiferencias(desde, hasta) {
+      const rs = new Map(data.remitos.filter((r) => canSee(r) && r.estado === 'con_diferencias' && dia(r.recibido_at) >= desde && dia(r.recibido_at) <= hasta).map((r) => [r.id, r]));
+      return clone(data.items.filter((i) => rs.has(i.remito_id) && i.cantidad_recibida != null && i.cantidad_recibida !== i.cantidad_enviada).map((i) => ({ ...i, remito: rs.get(i.remito_id) })));
     },
     async listEventos(limit = 30) {
       return clone(data.eventos.filter((e) => { const r = data.remitos.find((x) => x.id === e.remito_id); return r && canSee(r); })

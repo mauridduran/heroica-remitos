@@ -30,8 +30,8 @@ const hace = (iso) => {
 const ESTADOS = {
   borrador: { l: 'Borrador', c: 'gray', ico: '✎' },
   en_transito: { l: 'En tránsito', c: 'amber', ico: '🚚' },
-  recibido: { l: 'Recibido OK', c: 'green', ico: '✓' },
-  con_diferencias: { l: 'Con diferencias', c: 'red', ico: '!' },
+  recibido: { l: 'Recibido completo', c: 'green', ico: '✓' },
+  con_diferencias: { l: 'Recibido con diferencias', c: 'red', ico: '!' },
   anulado: { l: 'Anulado', c: 'muted', ico: '✕' },
 };
 const EVENTOS = {
@@ -43,21 +43,31 @@ const EVENTOS = {
   aviso: { l: 'Aviso enviado', c: 'blue', ico: '✉' },
   llegado: { l: 'Llegó al local', c: 'amber', ico: '📦' },
   facturado: { l: 'Cargado en facturación', c: 'green', ico: '$' },
+  dif_resuelta: { l: 'Diferencia resuelta por Producción', c: 'blue', ico: '✓' },
 };
+// Motivos con los que Producción resuelve una diferencia
+const DIF_TIPOS = { merma: 'Merma', error_carga: 'Error de carga del obrador', faltante_traslado: 'Faltante / rotura en el traslado', sobrante: 'Sobrante', reposicion: 'Reposición enviada', otro: 'Otro' };
 // Circuito administrativo (solo lo ve administración)
 const ESTADOS_ADMIN = {
   borrador: { l: 'Borrador', c: 'gray' },
-  enviado: { l: 'Enviado', c: 'amber' },
-  revision: { l: 'Pendiente de revisión', c: 'blue' },
-  facturacion: { l: 'Pendiente de carga de facturación', c: 'red' },
-  facturado: { l: 'Facturado', c: 'green' },
+  enviado: { l: 'En tránsito', c: 'amber' },
+  revision: { l: 'Pendiente de recepción', c: 'blue' },
+  facturacion: { l: 'Pendiente de facturación', c: 'red' },
+  facturado: { l: 'Facturado (diferencia sin resolver)', c: 'amber' },
+  cerrado: { l: 'Cerrado', c: 'green' },
   anulado: { l: 'Anulado', c: 'muted' },
 };
+const difPendiente = (r) => r.estado === 'con_diferencias' && !r.dif_resuelta_at;
+// Estado de la recepción / diferencia (lo ven todos)
+const badgeRecep = (r) => r.estado === 'recibido' ? '<span class="badge b-green">Recibido completo</span>'
+  : r.estado !== 'con_diferencias' ? ''
+  : difPendiente(r) ? '<span class="badge b-red">Diferencia pendiente de resolución</span>' : '<span class="badge b-gray">Diferencia resuelta</span>';
 const estadoAdmin = (r) => {
   if (r.estado === 'anulado') return 'anulado';
   if (r.estado === 'borrador') return 'borrador';
   if (r.estado === 'en_transito') return r.llegado_at ? 'revision' : 'enviado';
-  return r.facturado_at ? 'facturado' : 'facturacion';
+  if (!r.facturado_at) return 'facturacion';
+  return difPendiente(r) ? 'facturado' : 'cerrado';
 };
 const badgeAdmin = (r) => { const e = ESTADOS_ADMIN[estadoAdmin(r)]; return `<span class="badge b-${e.c}">${esc(e.l)}</span>`; };
 const ROLES = { admin: 'Administración', obrador: 'Obrador', local: 'Local', pendiente: 'Pendiente' };
@@ -124,7 +134,8 @@ const can = {
   llegar: (r) => r.estado === 'en_transito' && !r.llegado_at && (me.rol === 'admin' || (me.rol === 'local' && r.destino_id === me.location_id)),
   recibir: (r) => r.estado === 'en_transito' && (me.rol === 'admin' || (me.rol === 'local' && r.destino_id === me.location_id && !!r.llegado_at)),
   facturar: (r) => me.rol === 'admin' && ['recibido', 'con_diferencias'].includes(r.estado) && !r.facturado_at,
-  anular: (r) => r.estado !== 'anulado' && (me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id && ['borrador', 'en_transito'].includes(r.estado))),
+  resolver: (r) => difPendiente(r) && (me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id)),
+  anular: (r) => ['borrador', 'en_transito'].includes(r.estado) && (me.rol === 'admin' || (me.rol === 'obrador' && r.origen_id === me.location_id && ['borrador', 'en_transito'].includes(r.estado))),
 };
 
 async function loadMaestros() { [locs, prods, areas] = await Promise.all([db.listLocations(), db.listProducts(), db.listAreas()]); }
@@ -297,6 +308,7 @@ function renderPendiente() {
 function navItems() {
   const items = [['tablero', '◉', 'Tablero en vivo'], ['remitos', '☰', 'Remitos']];
   if (can.crear()) items.push(['remitos/nuevo', '+', 'Nuevo remito']);
+  if (me.rol !== 'local') items.push(['diferencias', '±', 'Diferencias']);
   if (me.rol !== 'obrador') items.push(['contraste', '⇄', 'Enviado vs. vendido']);
   if (can.admin()) items.push(['ventas', '↥', 'Ventas HioPos'], ['config', '⚙', 'Configuración']);
   return items;
@@ -336,6 +348,7 @@ async function route() {
     else if (path === 'remitos/nuevo') await viewNuevo(v);
     else if (path.startsWith('remitos/')) await viewDetalle(v, path.split('/')[1]);
     else if (path === 'contraste') await viewContraste(v);
+    else if (path === 'diferencias') await viewDiferencias(v);
     else if (path === 'ventas') await viewVentas(v);
     else if (path === 'config') await viewConfig(v);
     else v.innerHTML = '<div class="empty">Página no encontrada</div>';
@@ -357,18 +370,21 @@ async function viewTablero(v) {
     const newest = S.lastEvt?.numero;
     const esAdmin = me.rol === 'admin';
     const porEstado = (k) => rems.filter((r) => estadoAdmin(r) === k);
+    const difSinRes = rems.filter(difPendiente);
     const pendFact = esAdmin ? porEstado('facturacion').sort((a, b) => (a.recibido_at || '').localeCompare(b.recibido_at || '')) : [];
 
     v.innerHTML = `
       <div class="page-head"><div><h1>Tablero en vivo</h1><p>${esc(me.location_id ? locName(me.location_id) : 'Todos los obradores y locales')} · se actualiza solo</p></div>
       ${can.crear() ? '<a class="btn primary" href="#/remitos/nuevo">+ Nuevo remito</a>' : ''}</div>
+      ${me.rol === 'obrador' && difSinRes.length ? `<div class="callout"><span>± Hay ${difSinRes.length} remito${difSinRes.length > 1 ? 's' : ''} con diferencias para resolver</span><a class="btn" href="#/diferencias">Ver diferencias</a></div>` : ''}
       ${paraMi.length ? `<div class="callout"><span>🚚 Tenés ${paraMi.length} remito${paraMi.length > 1 ? 's' : ''} en camino para recibir</span><a class="btn" href="#/remitos/${paraMi[0].id}">${paraMi[0].llegado_at ? 'Controlar recepción' : 'Abrir remito'}</a></div>` : ''}
       ${esAdmin ? `<h2 style="margin:0 0 8px">Circuito administrativo <span class="small muted">(últimos 30 días)</span></h2>
       <div class="kpis">
-        <div class="card kpi warn"><div class="label">Enviado</div><div class="value">${porEstado('enviado').length}</div><div class="sub">en camino al local</div></div>
-        <div class="card kpi"><div class="label">Pendiente de revisión</div><div class="value" style="color:var(--blue)">${porEstado('revision').length}</div><div class="sub">llegó, el local está controlando</div></div>
-        <div class="card kpi ${pendFact.length ? 'alert' : ''}"><div class="label">Pendiente de carga de facturación</div><div class="value">${pendFact.length}</div><div class="sub">controlado por el local, falta facturar</div></div>
-        <div class="card kpi ok"><div class="label">Facturado</div><div class="value">${porEstado('facturado').length}</div><div class="sub">cerrados</div></div>
+        <div class="card kpi warn"><div class="label">En tránsito</div><div class="value">${porEstado('enviado').length}</div><div class="sub">en camino al local</div></div>
+        <div class="card kpi"><div class="label">Pendiente de recepción</div><div class="value" style="color:var(--blue)">${porEstado('revision').length}</div><div class="sub">llegó, el local está controlando</div></div>
+        <div class="card kpi ${pendFact.length ? 'alert' : ''}"><div class="label">Pendiente de facturación</div><div class="value">${pendFact.length}</div><div class="sub">controlado por el local, falta facturar</div></div>
+        <div class="card kpi ${difSinRes.length ? 'alert' : ''}"><a href="#/diferencias" style="color:inherit"><div class="label">Diferencias sin resolver</div><div class="value">${difSinRes.length}</div><div class="sub">Producción tiene que resolverlas</div></a></div>
+        <div class="card kpi ok"><div class="label">Cerrado</div><div class="value">${porEstado('cerrado').length}</div><div class="sub">facturado y sin diferencias pendientes</div></div>
       </div>` : ''}
       <div class="kpis">
         <div class="card kpi warn"><div class="label">En tránsito ahora</div><div class="value">${transito.length}</div><div class="sub">${fmtN(transito.reduce((s, r) => s + r.n_items, 0))} líneas de productos</div></div>
@@ -377,7 +393,7 @@ async function viewTablero(v) {
         <div class="card kpi"><div class="label">Borradores sin despachar</div><div class="value">${borr.length}</div><div class="sub">&nbsp;</div></div>
       </div>
       ${esAdmin && pendFact.length ? `<section class="card" style="margin-bottom:16px">
-          <div class="card-head"><h2>Pendientes de carga de facturación</h2><a class="small" href="#/remitos" id="ver-fact">Ver todos</a></div>
+          <div class="card-head"><h2>Pendientes de facturación</h2><a class="small" href="#/remitos" id="ver-fact">Ver todos</a></div>
           <div class="list">${pendFact.slice(0, 8).map((r) => `
             <a class="list-item" href="#/remitos/${r.id}" style="color:inherit">
               <div class="main"><div class="title">${label(r)} · ${esc(locName(r.destino_id))} <span class="muted small">${esc(area(r.area_id)?.nombre || '')}</span></div>
@@ -425,8 +441,8 @@ async function viewRemitos(v) {
       <label class="field"><span>Desde</span><input type="date" id="f-desde" value="${f.desde}"></label>
       <label class="field"><span>Hasta</span><input type="date" id="f-hasta" value="${f.hasta}"></label>
       <label class="field"><span>Estado</span><select id="f-estado"><option value="">Todos</option>${me.rol === 'admin'
-        ? `<optgroup label="Circuito administrativo">${Object.entries(ESTADOS_ADMIN).map(([k, e]) => `<option value="adm:${k}" ${f.estado === 'adm:' + k ? 'selected' : ''}>${e.l}</option>`).join('')}</optgroup><optgroup label="Recepción">${['recibido', 'con_diferencias'].map((k) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${ESTADOS[k].l}</option>`).join('')}</optgroup>`
-        : Object.entries(ESTADOS).map(([k, e]) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${e.l}</option>`).join('')}</select></label>
+        ? `<optgroup label="Circuito administrativo">${Object.entries(ESTADOS_ADMIN).map(([k, e]) => `<option value="adm:${k}" ${f.estado === 'adm:' + k ? 'selected' : ''}>${e.l}</option>`).join('')}</optgroup><optgroup label="Recepción">${['recibido', 'con_diferencias'].map((k) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${ESTADOS[k].l}</option>`).join('')}<option value="dif:pend" ${f.estado === 'dif:pend' ? 'selected' : ''}>Diferencia pendiente de resolución</option></optgroup>`
+        : Object.entries(ESTADOS).map(([k, e]) => `<option value="${k}" ${f.estado === k ? 'selected' : ''}>${e.l}</option>`).join('')}<option value="dif:pend" ${f.estado === 'dif:pend' ? 'selected' : ''}>Diferencia pendiente de resolución</option></select></label>
       ${me.rol !== 'obrador' ? `<label class="field"><span>Obrador</span><select id="f-origen"><option value="">Todos</option>${obradores().map((l) => `<option value="${l.id}" ${f.origen === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
       ${me.rol !== 'local' ? `<label class="field"><span>Local</span><select id="f-destino"><option value="">Todos</option>${locales().map((l) => `<option value="${l.id}" ${f.destino === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
       <label class="field"><span>Área</span><select id="f-area"><option value="">Todas</option>${areas.map((a) => `<option value="${a.id}" ${f.area === a.id ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('')}</select></label>
@@ -436,20 +452,20 @@ async function viewRemitos(v) {
   let rows = [];
   const draw = async () => {
     const all = await db.listRemitos({ desde: f.desde, hasta: f.hasta });
-    const okEstado = (r) => !f.estado || (f.estado.startsWith('adm:') ? estadoAdmin(r) === f.estado.slice(4) : r.estado === f.estado);
+    const okEstado = (r) => !f.estado || (f.estado === 'dif:pend' ? difPendiente(r) : f.estado.startsWith('adm:') ? estadoAdmin(r) === f.estado.slice(4) : r.estado === f.estado);
     rows = all.filter((r) => okEstado(r) && (!f.origen || r.origen_id === f.origen) && (!f.destino || r.destino_id === f.destino) && (!f.area || r.area_id === f.area) && (!f.q || label(r).includes(f.q.trim()) || (r.nro_papel || '').includes(f.q.trim())));
     $('#tbl').innerHTML = rows.length ? `<table>
       <thead><tr><th>N°</th><th>Área</th><th>Creado</th><th>Obrador</th><th>Local</th><th class="num">Productos</th><th>Estado</th><th>Despachado</th><th>Recibido</th></tr></thead>
       <tbody>${rows.map((r) => `<tr class="click ${r.estado === 'con_diferencias' ? 'row-dif' : ''}" data-id="${r.id}">
         <td class="nowrap"><b>${label(r)}</b></td><td>${esc(area(r.area_id)?.nombre || '—')}</td><td>${fmtF(r.creado_at)}</td><td>${esc(locName(r.origen_id))}</td><td>${esc(locName(r.destino_id))}</td>
-        <td class="num">${r.n_items}</td><td>${me.rol === 'admin' ? badgeAdmin(r) + (r.estado === 'con_diferencias' ? ' <span class="badge b-red">Dif.</span>' : '') : badge(r.estado)}</td><td class="small">${fmtFH(r.despachado_at)}</td><td class="small">${fmtFH(r.recibido_at)}</td></tr>`).join('')}</tbody>
+        <td class="num">${r.n_items}</td><td>${me.rol === 'admin' ? badgeAdmin(r) + (difPendiente(r) ? ' <span class="badge b-red">Dif. sin resolver</span>' : '') : r.estado === 'con_diferencias' ? badgeRecep(r) : badge(r.estado)}</td><td class="small">${fmtFH(r.despachado_at)}</td><td class="small">${fmtFH(r.recibido_at)}</td></tr>`).join('')}</tbody>
       </table>` : '<div class="empty">No hay remitos con estos filtros</div>';
     $$('#tbl tr[data-id]').forEach((tr) => (tr.onclick = () => (location.hash = '#/remitos/' + tr.dataset.id)));
   };
   const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
   bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-estado', 'estado'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-q', 'q');
   $('#csv').onclick = () => downloadCSV('remitos.csv', [['N°', 'Área', 'Creado', 'Obrador', 'Local', 'Productos', 'Estado', 'Despachado', 'Recibido'],
-    ...rows.map((r) => [label(r), area(r.area_id)?.nombre || '', fmtFH(r.creado_at), locName(r.origen_id), locName(r.destino_id), r.n_items, me.rol === 'admin' ? ESTADOS_ADMIN[estadoAdmin(r)].l + (r.estado === 'con_diferencias' ? ' (con diferencias)' : '') : ESTADOS[r.estado]?.l, fmtFH(r.despachado_at), fmtFH(r.recibido_at)])]);
+    ...rows.map((r) => [label(r), area(r.area_id)?.nombre || '', fmtFH(r.creado_at), locName(r.origen_id), locName(r.destino_id), r.n_items, me.rol === 'admin' ? ESTADOS_ADMIN[estadoAdmin(r)].l + (r.estado === 'con_diferencias' ? (difPendiente(r) ? ' (diferencia sin resolver)' : ' (diferencia resuelta)') : '') : ESTADOS[r.estado]?.l, fmtFH(r.despachado_at), fmtFH(r.recibido_at)])]);
   await draw();
   S.refresh = draw;
 }
@@ -460,6 +476,7 @@ async function viewRemitos(v) {
 async function viewNuevo(v) {
   if (!can.crear()) { v.innerHTML = '<div class="empty">No tenés permiso para crear remitos</div>'; return; }
   const activeAreas = areas.filter((a) => a.activo !== false);
+  const previos = await db.listRemitos({ desde: haceDias(400) });
   const st = S.nuevo = {
     origen: me.rol === 'obrador' ? me.location_id : obradores()[0]?.id, destino: '', area: activeAreas[0]?.id || '',
     q: '', todas: false, qty: {}, extras: [], bultos: {},
@@ -473,7 +490,7 @@ async function viewNuevo(v) {
           <label class="field"><span>Obrador (origen)</span>${me.rol === 'obrador' ? `<input value="${esc(locName(me.location_id))}" disabled>` : `<select id="origen">${obradores().map((l) => `<option value="${l.id}">${esc(l.nombre)}</option>`).join('')}</select>`}</label>
           <label class="field"><span>Destino (local)</span><select id="destino" required></select></label>
           <label class="field"><span>Entregado por</span><input id="entregado" placeholder="Quién lleva la mercadería"></label>
-          <label class="field"><span>N° remito en papel (opcional)</span><input id="papel" placeholder="Ej: 0003-0941"></label>
+          <label class="field"><span>N° del remito en papel (talonario) *</span><div style="display:flex;gap:6px;align-items:center"><b id="pref" class="nowrap"></b><input id="papel" inputmode="numeric" required placeholder="Ej: 0941" style="flex:1;min-width:0"></div><span class="small muted" id="papel-hint"></span></label>
         </div>
         <div class="form-grid">
           ${BULTOS.map((b) => `<label class="field"><span>Bultos · ${b}</span><input class="qty" style="width:100%" type="number" min="0" inputmode="numeric" data-b="${b}" placeholder="0"></label>`).join('')}
@@ -502,7 +519,12 @@ async function viewNuevo(v) {
     $('#destino').innerHTML = `<option value="">${opts.length ? 'Elegí un local…' : 'Este obrador no tiene locales asignados'}</option>` +
       opts.map((l) => `<option value="${l.id}" ${l.id === st.destino ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('');
   };
-  const drawAreas = () => $$('#areas button').forEach((b) => b.classList.toggle('on', b.dataset.a === st.area));
+  const drawAreas = () => {
+    $$('#areas button').forEach((b) => b.classList.toggle('on', b.dataset.a === st.area));
+    $('#pref').textContent = (area(st.area)?.prefijo || '0000') + ' -';
+    const ult = Math.max(0, ...previos.filter((r) => r.origen_id === st.origen && r.area_id === st.area && r.estado !== 'anulado').map((r) => r.nro_area || 0));
+    $('#papel-hint').textContent = ult ? `Último cargado: ${String(ult).padStart(4, '0')} · copiá el número impreso en el talonario` : 'Copiá el número impreso en el talonario';
+  };
   const drawList = () => {
     const q = norm(st.q);
     const ar = area(st.area);
@@ -541,7 +563,7 @@ async function viewNuevo(v) {
     $('#resumen').innerHTML = its.length ? `<b>${its.length}</b> renglones · valorizado a costo <b>${fmt$(val)}</b>` : 'Sin productos cargados';
   };
   $$('#areas button').forEach((b) => (b.onclick = () => { st.area = b.dataset.a; drawAreas(); drawList(); }));
-  if ($('#origen')) $('#origen').onchange = (e) => { st.origen = e.target.value; drawDestinos(); drawList(); };
+  if ($('#origen')) $('#origen').onchange = (e) => { st.origen = e.target.value; drawDestinos(); drawAreas(); drawList(); };
   $('#destino').onchange = (e) => (st.destino = e.target.value);
   $('#q').oninput = (e) => { st.q = e.target.value; drawList(); };
   $('#todas').onchange = (e) => { st.todas = e.target.checked; drawList(); };
@@ -549,12 +571,14 @@ async function viewNuevo(v) {
   $('#add-extra').onclick = () => { st.extras.push({ descripcion: '', unidad: '', tipo: 'normal', cantidad: '' }); drawExtras(); $(`#extras [data-x="${st.extras.length - 1}"]`)?.focus(); };
   const guardar = async (despachar, btn) => {
     if (!st.destino) return toast('Elegí el local de destino', { err: true });
+    const nro = parseInt($('#papel').value.replace(/\D/g, ''), 10);
+    if (!(nro > 0)) { $('#papel').focus(); return toast('Cargá el N° del remito de papel (talonario)', { err: true }); }
     if (!items().length) return toast('Cargá al menos un producto', { err: true });
     btn.disabled = true;
     try {
       const id = await db.createRemito({
         origen_id: st.origen, destino_id: st.destino, area_id: st.area || null, observaciones: $('#obs').value,
-        entregado_por: $('#entregado').value, nro_papel: $('#papel').value, bultos: st.bultos, items: items(), despachar,
+        entregado_por: $('#entregado').value, nro_area: nro, bultos: st.bultos, items: items(), despachar,
       });
       toast(despachar ? 'Remito despachado. El local ya lo puede ver.' : 'Borrador guardado');
       location.hash = '#/remitos/' + id;
@@ -570,7 +594,10 @@ async function viewNuevo(v) {
 // ======================================================================
 async function viewDetalle(v, id) {
   let recibiendo = false;
-  const rec = {};
+  const KREC = 'recepcion_' + id;
+  let rec = {};
+  try { rec = JSON.parse(localStorage.getItem(KREC) || '{}'); } catch {}
+  const guardarRec = () => { try { localStorage.setItem(KREC, JSON.stringify(rec)); } catch {} };
   const draw = async () => {
     const r = await db.getRemito(id);
     if (!r) { v.innerHTML = '<div class="empty">Remito no encontrado o sin permiso para verlo</div>'; return; }
@@ -588,13 +615,14 @@ async function viewDetalle(v, id) {
     v.innerHTML = `
       <div class="page-head">
         <div><a class="small no-print" href="#/remitos">← Remitos</a>
-          <h1 style="margin-top:6px">Remito ${label(r)} ${me.rol === 'admin' ? badgeAdmin(r) + (r.estado === 'con_diferencias' ? ' ' + badge('con_diferencias') : '') : badge(r.estado)}</h1>
+          <h1 style="margin-top:6px">Remito ${label(r)} ${me.rol === 'admin' ? badgeAdmin(r) + ' ' + badgeRecep(r) : r.estado === 'con_diferencias' ? badgeRecep(r) : badge(r.estado)}</h1>
           <p class="route"><b>${esc(locName(r.origen_id))}</b><span class="arrow">→</span><b>${esc(locName(r.destino_id))}</b></p></div>
         <div class="btn-row no-print">
           ${can.despachar(r) ? '<button class="btn primary" id="b-desp">Despachar 🚚</button>' : ''}
           ${can.llegar(r) ? '<button class="btn primary big" id="b-lleg">📦 Llegó al local</button>' : ''}
           ${can.recibir(r) && !recibiendo ? `<button class="btn ${r.llegado_at ? 'primary big' : ''}" id="b-rec">Controlar recepción</button>` : ''}
           ${can.facturar(r) ? '<button class="btn primary big" id="b-fact">Marcar como cargado en facturación</button>' : ''}
+          ${can.resolver(r) ? '<button class="btn primary" id="b-resol">Resolver diferencia</button>' : ''}
           <button class="btn" onclick="window.print()">Imprimir</button>
           ${can.anular(r) ? '<button class="btn danger" id="b-anul">Anular</button>' : ''}
         </div>
@@ -605,7 +633,7 @@ async function viewDetalle(v, id) {
         <div><span>Entregado por</span><b>${esc(r.entregado_por || '—')}</b></div>
         <div><span>Bultos enviados</span><b>${bul(r.bultos)}</b></div>
         ${r.bultos_recibidos ? `<div><span>Bultos recibidos</span><b style="color:${BULTOS.some((b) => (r.bultos?.[b] || 0) !== (r.bultos_recibidos?.[b] || 0)) ? 'var(--red)' : ''}">${bul(r.bultos_recibidos)}</b></div>` : ''}
-        ${r.nro_papel ? `<div><span>N° remito papel</span><b>${esc(r.nro_papel)}</b></div>` : ''}
+        ${r.despachado_at ? `<div><span>Fecha de envío</span><b>${fmtFH(r.despachado_at)}</b></div>` : ''}
         ${me.rol === 'admin' && r.facturado_at ? `<div><span>Facturado</span><b>${fmtFH(r.facturado_at)}${r.nro_factura ? ' · ' + esc(r.nro_factura) : ''}</b></div>` : ''}
       </div>
       ${r.estado === 'anulado' ? `<div class="callout">Remito anulado: ${esc(r.anulado_motivo || 'sin motivo')}</div>` : ''}
@@ -614,23 +642,27 @@ async function viewDetalle(v, id) {
         <div class="step ${r.despachado_at ? 'done' : ''}"><div class="t">2 · Despachado</div><div class="d">${r.despachado_at ? `${fmtFH(r.despachado_at)} · ${esc(evD?.usuario_nombre || '')}` : 'Pendiente'}</div></div>
         <div class="step ${r.llegado_at ? 'done' : ''}"><div class="t">3 · Llegó al local</div><div class="d">${r.llegado_at ? `${fmtFH(r.llegado_at)}${evL?.usuario_nombre ? ' · ' + esc(evL.usuario_nombre) : ''}` : r.despachado_at && r.estado !== 'anulado' ? `En camino · <span data-ago="${r.despachado_at}">${hace(r.despachado_at)}</span>` : 'Pendiente'}</div></div>
         <div class="step ${recibido ? (r.estado === 'con_diferencias' ? 'dif' : 'done') : ''}"><div class="t">4 · Controlado por el local</div><div class="d">${recibido ? `${fmtFH(r.recibido_at)} · ${esc(evR?.usuario_nombre || '')}` : r.llegado_at ? 'Pendiente de revisión' : 'Pendiente'}</div></div>
-        ${me.rol === 'admin' ? `<div class="step ${r.facturado_at ? 'done' : ''}"><div class="t">5 · Facturado</div><div class="d">${r.facturado_at ? `${fmtFH(r.facturado_at)} · ${esc(evF?.usuario_nombre || '')}` : recibido ? 'Pendiente de carga de facturación' : 'Pendiente'}</div></div>` : ''}
+        ${me.rol === 'admin' ? `<div class="step ${r.facturado_at ? 'done' : ''}"><div class="t">5 · Facturado</div><div class="d">${r.facturado_at ? `${fmtFH(r.facturado_at)} · ${esc(evF?.usuario_nombre || '')}` : recibido ? 'Pendiente de facturación' : 'Pendiente'}</div></div>
+        <div class="step ${estadoAdmin(r) === 'cerrado' ? 'done' : ''}"><div class="t">6 · Cerrado</div><div class="d">${estadoAdmin(r) === 'cerrado' ? 'Facturado y sin diferencias pendientes' : difPendiente(r) ? 'Falta resolver la diferencia' : 'Pendiente'}</div></div>` : ''}
       </div>
+      ${r.estado === 'con_diferencias' ? (r.dif_resuelta_at
+        ? `<div class="callout info"><span><b>Diferencia resuelta por Producción</b> · ${esc(DIF_TIPOS[r.dif_tipo] || r.dif_tipo || '')}${r.dif_resolucion ? ' · ' + esc(r.dif_resolucion) : ''} · ${fmtFH(r.dif_resuelta_at)}</span></div>`
+        : `<div class="callout"><span><b>Diferencia pendiente de resolución.</b> ${me.rol === 'local' ? 'Producción ya fue avisada.' : 'Se factura lo recibido; Producción tiene que indicar el motivo (merma, error de carga, faltante en el traslado…).'}</span></div>`) : ''}
       ${r.observaciones ? `<p><b>Observaciones del obrador:</b> ${esc(r.observaciones)}</p>` : ''}
       ${r.obs_recepcion ? `<p><b>Observaciones de recepción:</b> ${esc(r.obs_recepcion)}</p>` : ''}
-      ${recibiendo ? `<div class="callout info no-print"><span>Contá lo que llegó y cargá la cantidad real de cada producto. Si algo no coincide, se marca en rojo.</span><button class="btn" id="b-all">Todo llegó igual a lo enviado</button></div>` : ''}
+      ${recibiendo ? `<div class="callout info no-print"><span>Controlá producto por producto: cargá la cantidad que llegó y tildá ✓ cuando lo hayas contado. Si algo no coincide, se marca en rojo. <b id="prog"></b></span><button class="btn" id="b-all">Cargar cantidades enviadas</button></div>` : ''}
       <div class="card">
         <div class="table-wrap"><table>
-          <thead><tr><th>Producto</th><th>Unidad</th><th class="num">Enviado</th><th class="num">Recibido</th><th class="num">Diferencia</th><th>Observación</th></tr></thead>
+          <thead><tr>${recibiendo ? '<th>✓</th>' : ''}<th>Producto</th><th>Unidad</th><th class="num">Enviado</th><th class="num">Recibido</th><th class="num">Diferencia</th><th>Observación</th></tr></thead>
           <tbody>${items.map((i) => {
             const d = i.cantidad_recibida == null ? null : i.cantidad_recibida - i.cantidad_enviada;
-            return `<tr class="${d ? 'row-dif' : ''}"><td><b>${esc(i.p.nombre)}</b> <span class="muted small">${esc(i.p.codigo || '')}</span>${i.cortesia ? ' <span class="badge b-blue">Cortesía</span>' : ''}${i.especial ? ' <span class="badge b-amber">Especial del mes</span>' : ''}${!i.product_id ? ' <span class="badge b-gray">Ítem libre</span>' : ''}</td><td>${esc(i.p.unidad)}</td>
+            return `<tr class="${d ? 'row-dif' : ''}" data-row="${i.id}">${recibiendo ? `<td><input type="checkbox" class="ck" data-ck="${i.id}" ${rec[i.id]?.ok ? 'checked' : ''} aria-label="Controlado"></td>` : ''}<td><b>${esc(i.p.nombre)}</b> <span class="muted small">${esc(i.p.codigo || '')}</span>${i.cortesia ? ' <span class="badge b-blue">Cortesía</span>' : ''}${i.especial ? ' <span class="badge b-amber">Especial del mes</span>' : ''}${!i.product_id ? ' <span class="badge b-gray">Ítem libre</span>' : ''}</td><td>${esc(i.p.unidad)}</td>
               <td class="num">${fmtQ(i.cantidad_enviada)}</td>
               ${recibiendo
                 ? `<td class="num"><input class="qty" type="number" inputmode="decimal" min="0" step="any" data-i="${i.id}" data-env="${i.cantidad_enviada}" value="${rec[i.id]?.cantidad_recibida ?? ''}"></td><td class="num" data-d="${i.id}">—</td><td><input data-o="${i.id}" placeholder="Ej: 2 rotos" value="${esc(rec[i.id]?.obs || '')}" style="width:100%;min-width:120px"></td>`
                 : `<td class="num">${fmtQ(i.cantidad_recibida)}</td><td class="num" style="color:${d ? 'var(--red)' : ''}">${d == null ? '—' : d === 0 ? '✓' : (d > 0 ? '+' : '') + fmtQ(d)}</td><td class="small">${esc(i.obs || '')}</td>`}
             </tr>`; }).join('')}</tbody>
-          <tfoot><tr><td colspan="2">Total</td><td class="num">${fmtQ(totEnv)}</td><td class="num">${recibido ? fmtQ(totRec) : ''}</td><td class="num">${recibido ? (valDif ? fmt$(valDif) + ' a costo' : '✓') : ''}</td><td></td></tr></tfoot>
+          <tfoot><tr><td colspan="${recibiendo ? 3 : 2}">Total</td><td class="num">${fmtQ(totEnv)}</td><td class="num">${recibido ? fmtQ(totRec) : ''}</td><td class="num">${recibido ? (valDif ? fmt$(valDif) + ' a costo' : '✓') : ''}</td><td></td></tr></tfoot>
         </table></div>
       </div>
       ${recibiendo ? `<div class="card card-pad grid no-print" style="margin-top:16px">
@@ -654,6 +686,14 @@ async function viewDetalle(v, id) {
       e.currentTarget.disabled = true;
       try { await db.marcarLlegado(r.id); toast('Llegada registrada. Ahora controlá lo que llegó.'); recibiendo = true; S.refresh = null; draw(); } catch (ex) { err(ex); e.currentTarget.disabled = false; }
     });
+    $('#b-resol') && ($('#b-resol').onclick = async () => {
+      const res = await modalForm({ title: `Resolver diferencia · remito ${label(r)}`, submit: 'Marcar como resuelta',
+        html: `<p class="muted" style="margin:0">Indicá por qué no coincide lo enviado con lo recibido. Queda registrado en el historial y en el panel de Diferencias.</p>`,
+        fields: [{ name: 'tipo', label: 'Motivo', type: 'select', required: true, options: Object.entries(DIF_TIPOS).map(([value, label]) => ({ value, label })) },
+          { name: 'obs', label: 'Comentario (opcional)', type: 'textarea' }] });
+      if (!res) return;
+      try { await db.resolverDiferencia(r.id, res.tipo, res.obs || ''); toast('Diferencia resuelta'); draw(); } catch (e) { err(e); }
+    });
     $('#b-fact') && ($('#b-fact').onclick = async () => {
       const res = await modalForm({ title: `Remito ${label(r)} · cargado en facturación`, submit: 'Marcar como facturado',
         html: `<p class="muted" style="margin:0">Confirmá que cargaste en facturación lo que el local controló${r.estado === 'con_diferencias' ? ' (este remito tiene diferencias: facturá lo recibido, no lo enviado)' : ''}.</p>`,
@@ -662,9 +702,15 @@ async function viewDetalle(v, id) {
       try { await db.marcarFacturado(r.id, res.nro || ''); toast('Remito marcado como facturado'); draw(); } catch (e) { err(e); }
     });
     if (recibiendo) {
+      const prog = () => {
+        const n = items.filter((i) => rec[i.id]?.ok).length;
+        $('#prog').textContent = `${n} de ${items.length} productos controlados`;
+        $$('tr[data-row]').forEach((tr) => tr.classList.toggle('row-ok', !!rec[tr.dataset.row]?.ok));
+      };
       const upd = (inp) => {
         const env = Number(inp.dataset.env), val = inp.value;
         rec[inp.dataset.i] = { ...(rec[inp.dataset.i] || {}), cantidad_recibida: val };
+        guardarRec();
         const cell = $(`[data-d="${inp.dataset.i}"]`);
         inp.classList.remove('dif', 'okv');
         if (val === '') { cell.textContent = '—'; cell.style.color = ''; return; }
@@ -674,22 +720,34 @@ async function viewDetalle(v, id) {
         cell.style.color = d ? 'var(--red)' : 'var(--green)';
       };
       $$('input[data-i]').forEach((inp) => { inp.oninput = () => upd(inp); upd(inp); });
-      $$('input[data-o]').forEach((inp) => (inp.oninput = () => (rec[inp.dataset.o] = { ...(rec[inp.dataset.o] || {}), obs: inp.value })));
-      $('#obs-rec').oninput = (e) => (rec._obs = e.target.value);
+      $$('input[data-ck]').forEach((ck) => (ck.onchange = () => {
+        const inp = $(`input[data-i="${ck.dataset.ck}"]`);
+        // tildar sin cantidad = llegó igual a lo enviado
+        if (ck.checked && inp.value === '') { inp.value = inp.dataset.env; upd(inp); }
+        rec[ck.dataset.ck] = { ...(rec[ck.dataset.ck] || {}), ok: ck.checked };
+        guardarRec(); prog();
+      }));
+      $$('input[data-o]').forEach((inp) => (inp.oninput = () => { rec[inp.dataset.o] = { ...(rec[inp.dataset.o] || {}), obs: inp.value }; guardarRec(); }));
+      $('#obs-rec').oninput = (e) => { rec._obs = e.target.value; guardarRec(); };
       rec._bultos = rec._bultos || BULTOS.reduce((o, b) => ({ ...o, [b]: r.bultos?.[b] || 0 }), {});
-      $$('[data-rb]').forEach((i) => (i.oninput = () => (rec._bultos[i.dataset.rb] = Number(i.value) || 0)));
-      $('#b-all').onclick = () => $$('input[data-i]').forEach((inp) => { inp.value = inp.dataset.env; upd(inp); });
+      $$('[data-rb]').forEach((i) => (i.oninput = () => { rec._bultos[i.dataset.rb] = Number(i.value) || 0; guardarRec(); }));
+      $('#b-all').onclick = () => $$('input[data-i]').forEach((inp) => { if (inp.value === '') { inp.value = inp.dataset.env; upd(inp); } });
       $('#b-cancel').onclick = () => { recibiendo = false; S.refresh = draw; draw(); };
+      prog();
       $('#b-conf').onclick = async (e) => {
         const payload = items.map((i) => ({ id: i.id, cantidad_recibida: rec[i.id]?.cantidad_recibida ?? '', obs: rec[i.id]?.obs || '' }));
         const falt = payload.filter((p) => p.cantidad_recibida === '').length;
         if (falt) return toast(`Faltan cargar ${falt} producto${falt > 1 ? 's' : ''}`, { err: true });
+        const sinCk = items.filter((i) => !rec[i.id]?.ok).length;
+        if (sinCk) return toast(`Faltan tildar ${sinCk} producto${sinCk > 1 ? 's' : ''} como controlado${sinCk > 1 ? 's' : ''} ✓`, { err: true });
         const difs = payload.filter((p) => Number(p.cantidad_recibida) !== items.find((i) => i.id === p.id).cantidad_enviada).length;
         if (difs && !confirm(`Hay ${difs} producto${difs > 1 ? 's' : ''} con diferencia. ¿Confirmar la recepción igual?`)) return;
         e.currentTarget.disabled = true;
         try {
           const estado = await db.recibirRemito(r.id, payload, rec._obs || '', rec._bultos);
           toast(estado === 'recibido' ? 'Recepción confirmada: todo OK ✓' : 'Recepción confirmada con diferencias');
+          try { localStorage.removeItem(KREC); } catch {}
+          rec = {};
           recibiendo = false; S.refresh = draw; draw();
         } catch (ex) { err(ex); e.currentTarget.disabled = false; }
       };
@@ -697,6 +755,74 @@ async function viewDetalle(v, id) {
   };
   await draw();
   S.refresh = () => { if (!recibiendo) draw(); };
+}
+
+// ======================================================================
+//  Diferencias: lo que Producción tiene que resolver
+// ======================================================================
+async function viewDiferencias(v) {
+  const f = S.difFilters || (S.difFilters = { desde: haceDias(30), hasta: hoy(), estado: 'pend', origen: '', destino: '', area: '', q: '' });
+  v.innerHTML = `
+    <div class="page-head"><div><h1>Diferencias</h1><p>Productos donde lo recibido no coincide con lo enviado. Se factura lo recibido; Producción indica el motivo y la cierra.</p></div>
+    <div class="btn-row"><button class="btn" id="csv">Exportar CSV</button></div></div>
+    <div class="filters card card-pad">
+      <label class="field"><span>Recibido desde</span><input type="date" id="f-desde" value="${f.desde}"></label>
+      <label class="field"><span>Hasta</span><input type="date" id="f-hasta" value="${f.hasta}"></label>
+      <label class="field"><span>Estado</span><select id="f-estado"><option value="pend" ${f.estado === 'pend' ? 'selected' : ''}>Pendientes de resolución</option><option value="res" ${f.estado === 'res' ? 'selected' : ''}>Resueltas</option><option value="" ${f.estado === '' ? 'selected' : ''}>Todas</option></select></label>
+      ${me.rol === 'admin' ? `<label class="field"><span>Obrador</span><select id="f-origen"><option value="">Todos</option>${obradores().map((l) => `<option value="${l.id}" ${f.origen === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
+      <label class="field"><span>Sucursal</span><select id="f-destino"><option value="">Todas</option>${locales().map((l) => `<option value="${l.id}" ${f.destino === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>
+      <label class="field"><span>Área</span><select id="f-area"><option value="">Todas</option>${areas.map((a) => `<option value="${a.id}" ${f.area === a.id ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('')}</select></label>
+      <label class="field"><span>Producto</span><input id="f-q" value="${esc(f.q)}" placeholder="Buscar…" style="width:150px"></label>
+    </div>
+    <div class="kpis" id="dk"></div>
+    <div class="card"><div class="table-wrap" id="tbl"></div></div>
+    <div class="card" style="margin-top:16px"><div class="card-head"><h2>Por motivo (resueltas)</h2></div><div class="table-wrap" id="mot"></div></div>`;
+  let rows = [];
+  const draw = async () => {
+    const all = await db.listDiferencias(f.desde, f.hasta);
+    rows = all.map((i) => ({ ...i, nombre: itemNombre(i), unidad: itemUnidad(i), dif: Number(i.cantidad_recibida) - Number(i.cantidad_enviada), costo: prod(i.product_id)?.precio_costo || 0 }))
+      .filter((i) => (f.estado === '' || (f.estado === 'pend' ? !i.remito.dif_resuelta_at : !!i.remito.dif_resuelta_at))
+        && (!f.origen || i.remito.origen_id === f.origen) && (!f.destino || i.remito.destino_id === f.destino)
+        && (!f.area || i.remito.area_id === f.area) && (!f.q || norm(i.nombre).includes(norm(f.q))))
+      .sort((a, b) => (b.remito.recibido_at || '').localeCompare(a.remito.recibido_at || ''));
+    const remIds = new Set(rows.map((i) => i.remito.id));
+    const pend = new Set(rows.filter((i) => !i.remito.dif_resuelta_at).map((i) => i.remito.id));
+    const falt = rows.filter((i) => i.dif < 0).reduce((s, i) => s - i.dif * i.costo, 0);
+    const sobr = rows.filter((i) => i.dif > 0).reduce((s, i) => s + i.dif * i.costo, 0);
+    $('#dk').innerHTML = `
+      <div class="card kpi ${pend.size ? 'alert' : ''}"><div class="label">Remitos sin resolver</div><div class="value">${pend.size}</div><div class="sub">de ${remIds.size} con diferencias</div></div>
+      <div class="card kpi"><div class="label">Renglones con diferencia</div><div class="value">${rows.length}</div><div class="sub">&nbsp;</div></div>
+      <div class="card kpi alert"><div class="label">Faltantes a costo</div><div class="value">${fmt$(falt)}</div><div class="sub">llegó menos de lo enviado</div></div>
+      <div class="card kpi"><div class="label">Sobrantes a costo</div><div class="value">${fmt$(sobr)}</div><div class="sub">llegó más de lo enviado</div></div>`;
+    $('#tbl').innerHTML = rows.length ? `<table>
+      <thead><tr><th>Remito</th><th>Recibido</th><th>Sucursal</th><th>Área</th><th>Producto</th><th class="num">Enviado</th><th class="num">Recibido</th><th class="num">Dif.</th><th>Obs. del local</th><th>Estado</th></tr></thead>
+      <tbody>${rows.map((i) => `<tr class="click" data-id="${i.remito.id}">
+        <td class="nowrap"><b>${label(i.remito)}</b></td><td class="small">${fmtFH(i.remito.recibido_at)}</td><td>${esc(locName(i.remito.destino_id))}</td><td>${esc(area(i.remito.area_id)?.nombre || '—')}</td>
+        <td><b>${esc(i.nombre)}</b> <span class="muted small">${esc(i.unidad)}</span></td><td class="num">${fmtQ(i.cantidad_enviada)}</td><td class="num">${fmtQ(i.cantidad_recibida)}</td>
+        <td class="num" style="color:var(--red)">${i.dif > 0 ? '+' : ''}${fmtQ(i.dif)}</td><td class="small">${esc(i.obs || '')}</td>
+        <td>${i.remito.dif_resuelta_at ? `<span class="badge b-gray">${esc(DIF_TIPOS[i.remito.dif_tipo] || i.remito.dif_tipo)}</span>` : can.resolver({ ...i.remito }) ? `<button class="btn sm primary" data-res="${i.remito.id}">Resolver</button>` : '<span class="badge b-red">Pendiente</span>'}</td></tr>`).join('')}</tbody>
+      </table>` : `<div class="empty">${f.estado === 'pend' ? 'No hay diferencias pendientes 👌' : 'No hay diferencias con estos filtros'}</div>`;
+    const porMot = {};
+    rows.filter((i) => i.remito.dif_resuelta_at).forEach((i) => { const m = (porMot[i.remito.dif_tipo] ||= { rem: new Set(), val: 0 }); m.rem.add(i.remito.id); m.val += i.dif * i.costo; });
+    $('#mot').innerHTML = Object.keys(porMot).length ? `<table><thead><tr><th>Motivo</th><th class="num">Remitos</th><th class="num">Valor a costo</th></tr></thead><tbody>
+      ${Object.entries(porMot).map(([k, m]) => `<tr><td>${esc(DIF_TIPOS[k] || k)}</td><td class="num">${m.rem.size}</td><td class="num">${fmt$(m.val)}</td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty small">Sin diferencias resueltas en este período (elegí Estado: Resueltas o Todas)</div>';
+    $$('#tbl tr[data-id]').forEach((tr) => (tr.onclick = (e) => { if (!e.target.closest('[data-res]')) location.hash = '#/remitos/' + tr.dataset.id; }));
+    $$('#tbl [data-res]').forEach((b) => (b.onclick = async () => {
+      const res = await modalForm({ title: 'Resolver diferencia', submit: 'Marcar como resuelta',
+        fields: [{ name: 'tipo', label: 'Motivo', type: 'select', required: true, options: Object.entries(DIF_TIPOS).map(([value, label]) => ({ value, label })) },
+          { name: 'obs', label: 'Comentario (opcional)', type: 'textarea' }] });
+      if (!res) return;
+      try { await db.resolverDiferencia(b.dataset.res, res.tipo, res.obs || ''); toast('Diferencia resuelta'); draw(); } catch (e) { err(e); }
+    }));
+  };
+  const bind = (id, key) => { const el = $(id); if (el) el.oninput = () => { f[key] = el.value; draw(); }; };
+  bind('#f-desde', 'desde'); bind('#f-hasta', 'hasta'); bind('#f-estado', 'estado'); bind('#f-origen', 'origen'); bind('#f-destino', 'destino'); bind('#f-area', 'area'); bind('#f-q', 'q');
+  $('#csv').onclick = () => downloadCSV('diferencias.csv', [['Remito', 'Recibido', 'Obrador', 'Sucursal', 'Área', 'Producto', 'Unidad', 'Enviado', 'Recibido', 'Diferencia', 'Valor a costo', 'Obs. local', 'Estado', 'Motivo', 'Comentario Producción'],
+    ...rows.map((i) => [label(i.remito), fmtFH(i.remito.recibido_at), locName(i.remito.origen_id), locName(i.remito.destino_id), area(i.remito.area_id)?.nombre || '', i.nombre, i.unidad, i.cantidad_enviada, i.cantidad_recibida, i.dif, Math.round(i.dif * i.costo), i.obs || '',
+      i.remito.dif_resuelta_at ? 'Resuelta' : 'Pendiente', DIF_TIPOS[i.remito.dif_tipo] || i.remito.dif_tipo || '', i.remito.dif_resolucion || ''])]);
+  await draw();
+  S.refresh = draw;
 }
 
 // ======================================================================
@@ -992,13 +1118,14 @@ async function viewConfig(v) {
     };
     out.innerHTML = `<div class="card"><div class="card-head"><h2>Obradores y locales</h2><button class="btn primary sm" id="add">+ Agregar</button></div><div class="table-wrap"><table>
       <thead><tr><th>Nombre</th><th>Tipo</th><th>Abastecido por</th><th>Avisos al despachar</th><th>Código tienda HioPos</th><th>Estado</th><th></th></tr></thead>
-      <tbody>${[...locs].sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === 'obrador' ? -1 : 1) || ((a.activo === false) - (b.activo === false)) || a.nombre.localeCompare(b.nombre)).map((l) => `<tr><td><b>${esc(l.nombre)}</b></td><td>${l.tipo === 'obrador' ? '<span class="badge b-blue">Obrador</span>' : '<span class="badge b-green">Local</span>'}</td><td>${l.tipo === 'local' ? esc(l.obrador_id ? locName(l.obrador_id) : 'Cualquier obrador') : '—'}</td><td class="small">${avisoTxt(avisos.find((a) => a.location_id === l.id), l.tipo)}</td><td>${esc(l.codigo_hiopos || '—')}</td><td>${l.activo === false ? 'Inactivo' : 'Activo'}</td><td class="num"><button class="btn sm" data-e="${l.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>
+      <tbody>${[...locs].sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === 'obrador' ? -1 : 1) || ((a.activo === false) - (b.activo === false)) || a.nombre.localeCompare(b.nombre)).map((l) => `<tr><td><b>${esc(l.nombre)}</b></td><td>${l.tipo === 'obrador' ? '<span class="badge b-blue">Obrador</span>' : l.es_franquicia ? '<span class="badge b-amber">Franquicia</span>' : '<span class="badge b-green">Local propio</span>'}</td><td>${l.tipo === 'local' ? esc(l.obrador_id ? locName(l.obrador_id) : 'Cualquier obrador') : '—'}</td><td class="small">${avisoTxt(avisos.find((a) => a.location_id === l.id), l.tipo)}</td><td>${esc(l.codigo_hiopos || '—')}</td><td>${l.activo === false ? 'Inactivo' : 'Activo'}</td><td class="num"><button class="btn sm" data-e="${l.id}">Editar</button></td></tr>`).join('')}</tbody></table></div></div>
       <p class="small muted" style="margin-top:10px">Al despachar un remito se manda un mail a los encargados del local, a administración y al mail de avisos del local, y un WhatsApp al número del local. Para activar el WhatsApp, desde ese celular mandá <b>I allow callmebot to send me messages</b> al contacto <b>+34 644 45 70 57</b> y cargá acá el código (apikey) que responde.</p>`;
     const edit = async (l = {}) => {
       const av = avisos.find((a) => a.location_id === l.id) || {};
       const r = await modalForm({ title: l.id ? 'Editar sede' : 'Nueva sede', fields: [
         { name: 'nombre', label: 'Nombre', value: l.nombre, required: true },
         { name: 'tipo', label: 'Tipo', type: 'select', value: l.tipo || 'local', options: [{ value: 'obrador', label: 'Obrador' }, { value: 'local', label: 'Local' }] },
+        { name: 'es_franquicia', label: 'Propio o franquicia (solo locales)', type: 'select', value: String(!!l.es_franquicia), options: [{ value: 'false', label: 'Local propio' }, { value: 'true', label: 'Franquicia' }] },
         { name: 'obrador_id', label: 'Abastecido por (solo locales)', type: 'select', value: l.obrador_id || '', options: [{ value: '', label: 'Cualquier obrador' }, ...obradores().map((o) => ({ value: o.id, label: o.nombre }))] },
         { name: 'codigo_hiopos', label: 'Código / nombre de tienda en HioPos', value: l.codigo_hiopos },
         { name: 'activo', label: 'Estado', type: 'select', value: String(l.activo !== false), options: yesno },
@@ -1015,7 +1142,7 @@ async function viewConfig(v) {
       if (!r) return;
       const { av_email, av_whatsapp, av_apikey, ...loc } = r;
       try {
-        await db.saveLocation({ ...(l.id ? { id: l.id } : {}), ...loc, obrador_id: loc.tipo === 'local' && loc.obrador_id ? loc.obrador_id : null, activo: loc.activo === 'true' });
+        await db.saveLocation({ ...(l.id ? { id: l.id } : {}), ...loc, obrador_id: loc.tipo === 'local' && loc.obrador_id ? loc.obrador_id : null, es_franquicia: loc.tipo === 'local' && loc.es_franquicia === 'true', activo: loc.activo === 'true' });
         if (l.id) await db.saveAvisos({ location_id: l.id, email: (av_email || '').trim() || null, whatsapp: (av_whatsapp || '').replace(/[^\d+]/g, '') || null, callmebot_apikey: (av_apikey || '').trim() || null });
         await loadMaestros(); toast('Guardado'); viewConfig(v);
       } catch (e) { err(e); }
@@ -1047,8 +1174,8 @@ async function viewConfig(v) {
     const drawP = (q = '') => {
       const list = prods.filter((p) => !q || norm(p.nombre).includes(norm(q)) || norm(p.codigo).includes(norm(q)))
         .sort((a, b) => ((area(a.area_id)?.orden ?? 99) - (area(b.area_id)?.orden ?? 99)) || a.nombre.localeCompare(b.nombre));
-      $('#pt').innerHTML = `<table><thead><tr><th>Código</th><th>Producto</th><th>Unidad</th><th>Área</th><th>Sección</th><th>Código HioPos</th><th class="num">Costo</th><th class="num">Precio venta</th><th></th></tr></thead>
-        <tbody>${list.map((p) => `<tr style="${p.activo === false ? 'opacity:.5' : ''}"><td>${esc(p.codigo)}</td><td><b>${esc(p.nombre)}</b></td><td>${esc(p.unidad)}</td><td>${esc(area(p.area_id)?.nombre || '—')}</td><td class="small">${esc(SECCIONES[p.seccion] || '—')}</td><td>${p.codigo_hiopos ? esc(p.codigo_hiopos) : p.seccion === 'terminado' ? '<span class="badge b-amber">falta</span>' : '<span class="muted">—</span>'}</td><td class="num">${fmt$(p.precio_costo)}</td><td class="num">${fmt$(p.precio_venta)}</td><td class="num"><button class="btn sm" data-e="${p.id}">Editar</button></td></tr>`).join('')}</tbody></table>`;
+      $('#pt').innerHTML = `<table><thead><tr><th>Código</th><th>Producto</th><th>Unidad</th><th>Área</th><th>Sección</th><th>Código HioPos</th><th class="num">Costo</th><th class="num">Precio venta</th><th class="num">Precio franquicia</th><th></th></tr></thead>
+        <tbody>${list.map((p) => `<tr style="${p.activo === false ? 'opacity:.5' : ''}"><td>${esc(p.codigo)}</td><td><b>${esc(p.nombre)}</b></td><td>${esc(p.unidad)}</td><td>${esc(area(p.area_id)?.nombre || '—')}</td><td class="small">${esc(SECCIONES[p.seccion] || '—')}</td><td>${p.codigo_hiopos ? esc(p.codigo_hiopos) : p.seccion === 'terminado' ? '<span class="badge b-amber">falta</span>' : '<span class="muted">—</span>'}</td><td class="num">${fmt$(p.precio_costo)}</td><td class="num">${fmt$(p.precio_venta)}</td><td class="num">${p.precio_franquicia ? fmt$(p.precio_franquicia) : '<span class="muted">—</span>'}</td><td class="num"><button class="btn sm" data-e="${p.id}">Editar</button></td></tr>`).join('')}</tbody></table>`;
       $$('[data-e]', $('#pt')).forEach((b) => (b.onclick = () => edit(prods.find((p) => p.id === b.dataset.e))));
     };
     const edit = async (p = {}) => {
@@ -1063,6 +1190,7 @@ async function viewConfig(v) {
         { name: 'factor_hiopos', label: 'Unidades HioPos por unidad enviada', type: 'number', value: p.factor_hiopos ?? 1 },
         { name: 'precio_costo', label: 'Costo unitario', type: 'number', value: p.precio_costo ?? 0 },
         { name: 'precio_venta', label: 'Precio de venta', type: 'number', value: p.precio_venta ?? 0 },
+        { name: 'precio_franquicia', label: 'Precio a franquicias', type: 'number', value: p.precio_franquicia ?? 0 },
         { name: 'activo', label: 'Estado', type: 'select', value: String(p.activo !== false), options: yesno },
       ] });
       if (!r) return;
