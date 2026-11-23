@@ -129,6 +129,11 @@ const itemUnidad = (i) => (i.product_id ? prod(i.product_id)?.unidad : i.unidad)
 const obradores = () => locs.filter((l) => l.tipo === 'obrador' && l.activo !== false);
 const locales = () => locs.filter((l) => l.tipo === 'local' && l.activo !== false);
 // Locales que abastece un obrador (los que no tienen obrador asignado aparecen para todos)
+// Sedes que venden en HioPos: locales y también los obradores (tienen mostrador)
+const sedesVenta = () => [...locales(), ...obradores()];
+// "Obrador Guemes (Rosario)" → "Guemes", para reconocer la tienda en el informe de HioPos
+const nombreCorto = (l) => (l.tipo === 'obrador' ? l.nombre.replace(/\s*\(.*\)\s*$/, '').replace(/^obrador\s+/i, '') : l.nombre);
+const optsSedes = (sel) => `<optgroup label="Locales">${locales().map((l) => `<option value="${l.id}" ${sel === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</optgroup><optgroup label="Obradores">${obradores().map((l) => `<option value="${l.id}" ${sel === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</optgroup>`;
 const localesDe = (obradorId) => locales().filter((l) => !l.obrador_id || l.obrador_id === obradorId);
 const can = {
   crear: () => ['admin', 'obrador'].includes(me.rol),
@@ -1076,7 +1081,7 @@ async function viewContraste(v) {
   let rows = [];
   const draw = async () => {
     const [its, vts] = await Promise.all([db.listItemsDespachados(f.desde, f.hasta), db.listVentas(f.desde, f.hasta)]);
-    const inLoc = (id) => !f.local || id === f.local;
+    const inLoc = (id) => (f.local ? id === f.local : locs.find((l) => l.id === id)?.tipo === 'local');
     const map = new Map();
     const row = (pid) => {
       if (!map.has(pid)) { const p = prod(pid); map.set(pid, { pid, p, enviado: 0, recibido: 0, transito: 0, vendido: 0, importe: 0 }); }
@@ -1211,11 +1216,16 @@ async function viewVentas(v) {
     const vs = await db.listVentas(haceDias(14), hoy());
     const days = [...Array(14)].map((_, i) => haceDias(13 - i));
     $('#cob').innerHTML = `<table><thead><tr><th>Local</th>${days.map((d) => `<th class="num">${d.slice(8)}/${d.slice(5, 7)}</th>`).join('')}</tr></thead><tbody>
-      ${locales().map((l) => `<tr><td><b>${esc(l.nombre)}</b></td>${days.map((d) => { const imp = vs.filter((x) => x.location_id === l.id && x.fecha === d).reduce((s, x) => s + x.importe, 0); return `<td class="num small" style="color:${imp ? '' : 'var(--muted)'}">${imp ? fmtN(imp / 1000) + 'k' : '—'}</td>`; }).join('')}</tr>`).join('')}
+      ${sedesVenta().map((l) => `<tr><td><b>${esc(l.nombre)}</b>${l.tipo === 'obrador' ? ' <span class="badge b-blue">Obrador</span>' : ''}</td>${days.map((d) => { const imp = vs.filter((x) => x.location_id === l.id && x.fecha === d).reduce((s, x) => s + x.importe, 0); return `<td class="num small" style="color:${imp ? '' : 'var(--muted)'}">${imp ? fmtN(imp / 1000) + 'k' : '—'}</td>`; }).join('')}</tr>`).join('')}
     </tbody></table>`;
   };
 
-  const matchLocal = (val) => { const n = norm(val); if (!n) return null; return locales().find((l) => norm(l.codigo_hiopos) === n || norm(l.nombre) === n || n.includes(norm(l.nombre)))?.id || null; };
+  const matchLocal = (val) => {
+    const n = norm(val); if (!n) return null;
+    const S2 = sedesVenta();
+    return (S2.find((l) => l.codigo_hiopos && norm(l.codigo_hiopos) === n) || S2.find((l) => norm(l.nombre) === n || norm(nombreCorto(l)) === n)
+      || S2.find((l) => n.includes(norm(l.nombre)) || n.includes(norm(nombreCorto(l)))))?.id || null;
+  };
   const matchProd = (cod, desc) => {
     const c = norm(cod), d = norm(desc);
     return prods.find((p) => (c && (norm(p.codigo_hiopos) === c || norm(p.codigo) === c)) || (d && norm(p.nombre) === d))?.id || null;
@@ -1253,7 +1263,7 @@ async function viewVentas(v) {
         <label class="field"><span>Fecha</span>${opt('fecha', '— Fecha fija —')}</label>
         ${st.map.fecha === '' ? `<label class="field"><span>Fecha de las ventas</span><input type="date" id="ffija" value="${st.fechaFija}"></label>` : ''}
         <label class="field"><span>Local / tienda</span>${opt('local', '— Local fijo —')}</label>
-        ${st.map.local === '' ? `<label class="field"><span>Local de las ventas</span><select id="lfijo"><option value="">Elegí…</option>${locales().map((l) => `<option value="${l.id}" ${st.localFijo === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}</select></label>` : ''}
+        ${st.map.local === '' ? `<label class="field"><span>Local u obrador de las ventas</span><select id="lfijo"><option value="">Elegí…</option>${optsSedes(st.localFijo)}</select></label>` : ''}
         <label class="field"><span>Código artículo</span>${opt('codigo', '— Sin código —')}</label>
         <label class="field"><span>Descripción</span>${opt('descripcion', '— Sin descripción —')}</label>
         <label class="field"><span>Cantidad / unidades</span>${opt('cantidad')}</label>
@@ -1309,7 +1319,7 @@ async function viewVentas(v) {
       if (st.map.cantidad === '') st.map.cantidad = '0';
       // si el encabezado del informe menciona la tienda (ej. "Tienda: Funes"), se preselecciona
       const pre = aoa.slice(0, hi).flat().join(' ');
-      const tienda = locales().find((l) => norm(pre).includes(norm(l.nombre)) || (l.codigo_hiopos && norm(pre).includes(norm(l.codigo_hiopos))));
+      const tienda = sedesVenta().find((l) => (l.codigo_hiopos && norm(pre).includes(norm(l.codigo_hiopos))) || norm(pre).includes(norm(l.nombre)) || norm(pre).includes(norm(nombreCorto(l))));
       if (tienda) st.localFijo = tienda.id;
       // ídem fecha, si el informe es de un solo día
       const fpre = pre.match(/(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})/);
